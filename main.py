@@ -4,6 +4,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from mangum import Mangum
 from sqlalchemy.orm import Session
 from starlette import status
 
@@ -31,14 +32,25 @@ app.add_middleware(
 
 @app.post("/create_room")
 def create_room(room: RoomCreate, db: Session = Depends(get_db)):
-    new_room = Room(
-        room_id=room.room_id,
-        room_name=room.room_name
-    )
-    db.add(new_room)
-    db.commit()
-    db.refresh(new_room)
-    return {"message": f"Room created successfully: {new_room.room_id}"}
+    user = db.query(User).filter(User.username == room.username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    existing_room = db.query(Room).filter(Room.room_id == room.room_id).first()
+    if existing_room:
+        raise HTTPException(status_code=400, detail="Room already exists")
+
+    new_room = Room(room_id=room.room_id, room_name=room.room_name)
+
+    try:
+        user.rooms.append(new_room)
+        db.add(new_room)
+        db.commit()
+        db.refresh(new_room)
+        return {"message": f"Room created successfully: {new_room.room_id}"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create room")
 
 def hash_password(password: str):
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
@@ -152,3 +164,4 @@ async def get_all_messages_in_room(room: RoomIdSchema, db: Session = Depends(get
     return messages
 
 
+handler = Mangum(app)
