@@ -1,14 +1,19 @@
 import hashlib
 import uuid
 from datetime import datetime
-
+import requests
+import httpx
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from sqlalchemy.orm import Session
 from starlette import status
+from botocore.exceptions import ClientError
+import boto3
+import json
 
-from models import User, Room, Base, Message
+from constants import secret_key
+from models import User, Room, Base, Message, Connection
 from database import engine, get_db
 from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, UserRoomSchema, \
     SendMessage, UsernameSchema, RoomIdSchema
@@ -27,6 +32,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+API_GATEWAY_ENDPOINT = 'https://c4plozmo3f.execute-api.us-east-1.amazonaws.com/production/'
+apigw_management_client = boto3.client('apigatewaymanagementapi', endpoint_url=API_GATEWAY_ENDPOINT)
+
+
+
+async def verify_recaptcha(token: str) -> bool:
+    url = 'https://www.google.com/recaptcha/api/siteverify'
+    data={
+        "secret": secret_key,
+        "response": token,
+    }
+    response = requests.post(url, data=data)
+    result = response.json()
+    return result['success']
 
 
 
@@ -57,6 +76,10 @@ def hash_password(password: str):
 
 @app.post("/register/", status_code=status.HTTP_201_CREATED)
 async def register_user(user_info: UserCreate, db: Session = Depends(get_db)):
+    is_valid_captcha = await verify_recaptcha(user_info.recaptcha_token)
+    if not is_valid_captcha:
+        raise HTTPException(status_code=400, detail="Invalid reCAPTCHA")
+
     user = db.query(User).filter(User.username == user_info.username).first()
     if user:
         return {"message": "User already exists"}
@@ -75,16 +98,21 @@ async def register_user(user_info: UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/login/")
 async def login(user_info: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == user_info.username).first()
-    hashed_password = hash_password(user_info.password)
-    actual_password = user.password
-    if user:
-        if actual_password == hashed_password:
-            return {"message": f"User logged in successfully: {user.username}"}
-        else:
-            return {"message": "Wrong password"}
+    is_valid_captcha = await verify_recaptcha(user_info.recaptcha_token)
+    if not is_valid_captcha:
+        raise HTTPException(status_code=400, detail="Invalid reCAPTCHA")
 
-    return {"message": "User not found"}
+    user = db.query(User).filter(User.username == user_info.username).first()
+    print(f"user {user}")
+    hashed_password = hash_password(user_info.password)
+    if user:
+        actual_password = user.password
+        if actual_password == hashed_password:
+            return {"message": f"User logged in successfully: {user.username}", "status_code": 200}
+        else:
+            return {"message": "Wrong password", "status_code": 401}
+
+    return {"message": "User not found", "status_code": 404}
 
 @app.post("/user/", response_model=UserSchema)
 async def get_user_profile(user_info: UsernameSchema, db: Session = Depends(get_db)):
@@ -94,7 +122,7 @@ async def get_user_profile(user_info: UsernameSchema, db: Session = Depends(get_
     return user
 
 
-@app.post("/send_message/")
+@app.post("/websocket/send_message/")
 async def send_message_in_room(message: MessageSchema, db: Session = Depends(get_db)):
     sender = db.query(User).filter(User.username == message.username).first()
     room = db.query(Room).filter(Room.room_id == message.room_id).first()
@@ -117,6 +145,31 @@ async def send_message_in_room(message: MessageSchema, db: Session = Depends(get
     db.add(new_message)
     db.commit()
     db.refresh(new_message)
+
+    connections = db.query(Connection).filter(Connection.room_id == message.room_id).all()
+    message_data = {
+        "message_id": new_message.message_id,
+        "content": new_message.content,
+        "username": new_message.username,
+        "room_id": new_message.room_id,
+        "timestamp": new_message.timestamp.isoformat()
+    }
+
+    for connection in connections:
+        try:
+            apigw_management_client.post_to_connection(
+                Data=json.dumps(message_data),
+                ConnectionId=connection.connection_id
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'GoneException':
+                # Connection is stale, remove it
+                db.delete(connection)
+                db.commit()
+            else:
+                print(f"Error sending message to {connection.connection_id}: {e}")
+
+
     return {"message": f"Message sent successfully: {new_message.message_id}"}
 
 
@@ -164,4 +217,111 @@ async def get_all_messages_in_room(room: RoomIdSchema, db: Session = Depends(get
     return messages
 
 
-handler = Mangum(app)
+def websocket_connect(event, context):
+    db = next(get_db())
+    connection_id = event['requestContext']['connectionId']
+    username = event.get("queryStringParameters", {}).get("username")
+    room_id = event.get("queryStringParameters", {}).get("room_id")
+
+    if not username or not room_id:
+        return {"statusCode": 400, "body": "Missing username or room_id"}
+
+    user = db.query(User).filter(User.username == username).first()
+    room = db.query(Room).filter(Room.room_id == room_id).first()
+
+    if not user:
+        return {"message": "User does not exist","statusCode": 400}
+    if not room:
+        return {"message": "Room does not exist","statusCode": 400}
+
+    user_in_room = db.query(User).filter(User.rooms.any(room_id=room_id)).filter(User.username == username).first()
+    if not user_in_room:
+        return {"statusCode": 403, "body": "User not in room"}
+
+    try:
+        new_connection = Connection(connection_id=connection_id, username=username, room_id=room_id)
+        db.add(new_connection)
+        db.commit()
+        db.refresh(new_connection)
+        return {"statusCode": 200, "body": json.dumps({"message": "Connected"})}
+    except Exception as e:
+        db.rollback()
+        return {"statusCode": 500, "body": json.dumps({"message": f"Internal error: {str(e)}"})}
+    # return {"message": f"Connection created successfully: {new_connection.connection_id}","statusCode": 200, "body": "Connected"}
+
+def websocket_disconnect(event, context):
+    db = next(get_db())
+    connection_id = event['requestContext']['connectionId']
+    connection = db.query(Connection).filter(Connection.connection_id == connection_id).first()
+    if connection:
+        db.delete(connection)
+        db.commit()
+    return {"statusCode": 200, "body": json.dumps({"message": "Disconnected"})}
+
+def websocket_send_message(event, context):
+    db = next(get_db())
+    body = json.loads(event.get("body", "{}"))
+    message = MessageSchema(**body)
+    sender = db.query(User).filter(User.username == message.username).first()
+    room = db.query(Room).filter(Room.room_id == message.room_id).first()
+    sender_is_in_room = db.query(User).filter(User.rooms.any(room_id=message.room_id)).filter(User.username == message.username).first()
+
+    if not sender:
+        return {"statusCode": 404, "body": json.dumps({"message": "Sender does not exist"})}
+    if not room:
+        return {"statusCode": 404, "body": json.dumps({"message": "Room does not exist"})}
+    if not sender_is_in_room:
+        return {"statusCode": 403, "body": json.dumps({"message": "Sender is not in room"})}
+
+    new_message = Message(
+        message_id=str(uuid.uuid4()),
+        content=message.content,
+        username=message.username,
+        room_id=message.room_id,
+        timestamp=message.timestamp or datetime.now(datetime.UTC)
+    )
+    db.add(new_message)
+    db.commit()
+    db.refresh(new_message)
+
+    connections = db.query(Connection).filter(Connection.room_id == message.room_id).all()
+    message_data = {
+        "message_id": new_message.message_id,
+        "content": new_message.content,
+        "username": new_message.username,
+        "room_id": new_message.room_id,
+        "timestamp": new_message.timestamp.isoformat()
+    }
+
+    for connection in connections:
+        try:
+            apigw_management_client.post_to_connection(
+                Data=json.dumps(message_data),
+                ConnectionId=connection.connection_id
+            )
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'GoneException':
+                db.delete(connection)
+                db.commit()
+            else:
+                print(f"Error sending message to {connection.connection_id}: {e}")
+
+    return {"statusCode": 200, "body": json.dumps({"message": f"Message sent successfully: {new_message.message_id}"})}
+
+
+
+def handler(event, context):
+    route_key = event.get("requestContext", {}).get("routeKey")
+    if route_key == "$connect":
+        return websocket_connect(event, context)
+    elif route_key == "$disconnect":
+        return websocket_disconnect(event, context)
+    elif route_key == "sendmessage":  # Adjust based on your route key
+        return websocket_send_message(event, context)
+    else:
+        # Delegate HTTP events to Mangum
+        return Mangum(app)(event, context)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

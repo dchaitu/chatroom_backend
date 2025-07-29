@@ -9,6 +9,7 @@ class UserCreate(BaseModel):
     password: str
     fullname: str
     email: str
+    recaptcha_token: str
 
 class RoomCreate(BaseModel):
     room_id: str
@@ -19,6 +20,7 @@ class RoomCreate(BaseModel):
 class UserLogin(BaseModel):
     username: str
     password: str
+    recaptcha_token: str
 
 
 class RoomSchema(BaseModel):
