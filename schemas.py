@@ -66,8 +66,3 @@ class SendMessage(BaseModel):
     timestamp: datetime
 
 
-class UsernameSchema(BaseModel):
-    username: str
-
-class RoomIdSchema(BaseModel):
-    room_id: str

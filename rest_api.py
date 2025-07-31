@@ -5,9 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from models import User, Room, Base, Message
+from models import User, Room, Base, Message, Connection
 from database import engine, get_db
-from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, UserRoomSchema, UsernameSchema, RoomIdSchema
+from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, UserRoomSchema
 
 app = FastAPI()
 Base.metadata.create_all(bind=engine)
@@ -15,7 +15,6 @@ Base.metadata.create_all(bind=engine)
 origins = [
     "http://localhost",
     "http://localhost:3000",
-    "https://your-react-app-domain.com",  # Update with your deployed domain
 ]
 
 app.add_middleware(
@@ -32,6 +31,7 @@ def hash_password(password: str):
 @app.post("/create_room")
 def create_room(room: RoomCreate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == room.username).first()
+    print("Create room user",user, user.username)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     existing_room = db.query(Room).filter(Room.room_id == room.room_id).first()
@@ -69,9 +69,9 @@ async def login(user_info: UserLogin, db: Session = Depends(get_db)):
         return {"message": f"User logged in successfully: {user.username}", "status_code": 200}
     return {"message": "Invalid credentials", "status_code": 401}
 
-@app.post("/user/", response_model=UserSchema)
-async def get_user_profile(user_info: UsernameSchema, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == user_info.username).first()
+@app.post("/user/{username}", response_model=UserSchema)
+async def get_user_profile(username: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == username).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
@@ -101,17 +101,41 @@ async def user_leave_room(leave_room: UserRoomSchema, db: Session = Depends(get_
     db.commit()
     return {"message": f"{user.username} has left the room {room.room_name}", "status_code": 200}
 
-@app.post("/rooms/", response_model=list[RoomSchema])
-async def get_user_rooms(user_details: UsernameSchema, db: Session = Depends(get_db)):
-    users = db.query(User).filter(User.username == user_details.username).all()
+@app.post("/rooms/{username}", response_model=list[RoomSchema])
+async def get_user_rooms(username: str, db: Session = Depends(get_db)):
+    users = db.query(User).filter(User.username == username).all()
     user_rooms = [room.room_id for user in users for room in user.rooms]
     if not user_rooms:
-        return {"message": "No rooms available", "status_code": 404}
+        return HTTPException(status_code=404, detail="No rooms available")
     return db.query(Room).filter(Room.room_id.in_(user_rooms)).all()
 
-@app.post("/rooms/messages/", response_model=list[MessageSchema])
-async def get_all_messages_in_room(room: RoomIdSchema, db: Session = Depends(get_db)):
-    messages = db.query(Message).filter(Message.room_id == room.room_id).all()
+@app.post("/rooms/{username}/{room_id}/messages/", response_model=list[MessageSchema])
+async def get_all_messages_in_room(room_id: str, db: Session = Depends(get_db)):
+    messages = db.query(Message).filter(Message.room_id == room_id).all()
+    return messages
+
+
+@app.post("/room_details/{room_id}")
+async def get_room_details(room_id:str, db: Session = Depends(get_db)):
+    room_data = db.query(Room).filter(Room.room_id == room_id).first()
+    if not room_data:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Fetch active users from the Connection table
+    active_connections = db.query(Connection).filter(Connection.room_id == room_id).all()
+    all_connections = db.query(Connection).all()
+    print(f"Active connections: {[conn.username for conn in active_connections]}")
+    print(f"All connections: {[conn.username for conn in all_connections]}")
+    active_users = [conn.username for conn in active_connections]
+
+    return {
+        "room_name": room_data.room_name,
+        "active_users": active_users
+    }
+
+@app.get("/messages/{room_id}", response_model=list[MessageSchema])
+async def get_messages(room_id: str, db: Session = Depends(get_db)):
+    messages = db.query(Message).filter(Message.room_id == room_id).all()
     return messages
 
 handler = Mangum(app)

@@ -300,14 +300,22 @@ def websocket_send_message(event, context):
     print("Received event:", event)
     body = event.get("body")
     if not body or not isinstance(body, str) or body.strip() == "":
-        return {"statusCode": 400, "body": json.dumps({"message": "Invalid or missing message body"})}
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"message": "Invalid or missing message body"}),
+        }
 
     try:
         print("Raw body before parsing:", body)
         data = json.loads(body)
         print("Parsed data:", data)
     except json.JSONDecodeError as e:
-        return {"statusCode": 400, "body": json.dumps({"message": "Invalid JSON format", "error": str(e), "raw_body": body})}
+        return {
+            "statusCode": 400,
+            "body": json.dumps(
+                {"message": "Invalid JSON format", "error": str(e), "raw_body": body}
+            ),
+        }
 
     action = data.get("action")
     if action != "sendmessage":
@@ -317,56 +325,82 @@ def websocket_send_message(event, context):
     try:
         message = MessageSchema(**message_data)
     except ValidationError as e:
-        return {"statusCode": 400, "body": json.dumps({"message": "Validation error", "details": e.errors()})}
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"message": "Validation error", "details": e.errors()}),
+        }
 
     sender = db.query(User).filter(User.username == message.username).first()
     room = db.query(Room).filter(Room.room_id == message.room_id).first()
-    sender_is_in_room = db.query(User).filter(User.rooms.any(room_id=message.room_id)).filter(User.username == message.username).first()
+    sender_is_in_room = (
+        db.query(User)
+        .filter(User.rooms.any(room_id=message.room_id))
+        .filter(User.username == message.username)
+        .first()
+    )
 
     if not sender:
-        return {"statusCode": 404, "body": json.dumps({"message": "Sender does not exist"})}
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"message": "Sender does not exist"}),
+        }
     if not room:
-        return {"statusCode": 404, "body": json.dumps({"message": "Room does not exist"})}
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"message": "Room does not exist"}),
+        }
     if not sender_is_in_room:
-        return {"statusCode": 403, "body": json.dumps({"message": "Sender is not in room"})}
+        return {
+            "statusCode": 403,
+            "body": json.dumps({"message": "Sender is not in room"}),
+        }
 
     new_message = Message(
         message_id=str(uuid.uuid4()),
         content=message.content,
         username=message.username,
         room_id=message.room_id,
-        timestamp=message.timestamp or datetime.now(datetime.UTC)
+        timestamp=message.timestamp or datetime.now(datetime.UTC),
     )
     db.add(new_message)
     db.commit()
     db.refresh(new_message)
 
-    connections = db.query(Connection).filter(Connection.room_id == message.room_id).all()
-    print(f"Found connections: {len(connections)} for room {message.room_id}")  # Add this
+    connections = (
+        db.query(Connection).filter(Connection.room_id == message.room_id).all()
+    )
+    print(
+        f"Found connections: {len(connections)} for room {message.room_id}"
+    )  # Add this
     message_data = {
         "message_id": new_message.message_id,
         "content": new_message.content,
         "username": new_message.username,
         "room_id": new_message.room_id,
-        "timestamp": new_message.timestamp.isoformat()
+        "timestamp": new_message.timestamp.isoformat(),
     }
 
     for connection in connections:
         try:
             print(f"Broadcasting to connection: {connection.connection_id}")
             apigw_management_client.post_to_connection(
-                Data=json.dumps(message_data),
-                ConnectionId=connection.connection_id
+                Data=json.dumps(message_data), ConnectionId=connection.connection_id
             )
         except ClientError as e:
-            if e.response['Error']['Code'] == 'GoneException':
+            if e.response["Error"]["Code"] == "GoneException":
                 db.delete(connection)
                 db.commit()
                 print(f"Removed stale connection: {connection.connection_id}")
             else:
                 print(f"Error broadcasting to {connection.connection_id}: {e}")
 
-    return {"statusCode": 200, "body": json.dumps({"message": f"Message sent successfully: {new_message.message_id}"})}
+    return {
+        "statusCode": 200,
+        "body": json.dumps(
+            {"message": f"Message sent successfully: {new_message.message_id}"}
+        ),
+    }
+
 
 def handler(event, context):
     route_key = event.get("requestContext", {}).get("routeKey")
