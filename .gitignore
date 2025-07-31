@@ -8,7 +8,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 .idea
-
+chat_lambda
+chat_lambda.zip
 # Distribution / packaging
 .Python
 build/

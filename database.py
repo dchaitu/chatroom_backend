@@ -1,24 +1,22 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+import boto3
+import os
+from botocore.exceptions import ClientError
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./chat_app.db"
-POSTGRES_USER = "postgres"
-POSTGRES_PASSWORD = "lokesh123"
-POSTGRES_SERVER = "chatroom-fastapi.c6tu2uok2zjc.us-east-1.rds.amazonaws.com"
-POSTGRES_PORT = "5432"
-POSTGRES_DB = "postgres"
+dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region as needed
+table_names = {
+    'users': os.environ.get('DYNAMODB_USERS_TABLE', 'Users'),
+    'rooms': os.environ.get('DYNAMODB_ROOMS_TABLE', 'Rooms'),
+    'messages': os.environ.get('DYNAMODB_MESSAGES_TABLE', 'Messages'),
+    'connections': os.environ.get('DYNAMODB_CONNECTIONS_TABLE', 'Connections')
+}
 
-POSTGRES_URL = (
-    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}:{POSTGRES_PORT}/{POSTGRES_DB}"
-)
-
-engine = create_engine(POSTGRES_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
+def get_table(table_name):
+    return dynamodb.Table(table_names[table_name])
 
 def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    return {
+        'users': get_table('users'),
+        'rooms': get_table('rooms'),
+        'messages': get_table('messages'),
+        'connections': get_table('connections')
+    }
