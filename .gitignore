@@ -10,6 +10,8 @@ __pycache__/
 .idea
 chat_lambda
 chat_lambda.zip
+chat_dynamo
+chat_dynamo.zip
 # Distribution / packaging
 .Python
 build/

@@ -14,7 +14,6 @@ class UserCreate(BaseModel):
 class RoomCreate(BaseModel):
     room_id: str
     room_name: str
-    username: str
 
 
 class UserLogin(BaseModel):
