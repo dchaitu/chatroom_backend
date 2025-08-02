@@ -12,7 +12,7 @@ class User(Model):
     password = UnicodeAttribute()
     fullname = UnicodeAttribute()
     email = UnicodeAttribute()
-    rooms = ListAttribute(default=[])  # List of room IDs
+    rooms = ListAttribute(default=list)  # List of room IDs
 
 
 class Room(Model):
@@ -22,7 +22,7 @@ class Room(Model):
 
     room_id = UnicodeAttribute(hash_key=True)
     room_name = UnicodeAttribute()
-    users = ListAttribute(default=[])  # List of usernames
+    users = ListAttribute(default=list)  # List of usernames
 
 
 class Message(Model):
