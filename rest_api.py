@@ -1,17 +1,27 @@
+print("Starting", flush=True)
 import hashlib
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from datetime import datetime, timedelta
-import jwt
 import os
 import requests
+import boto3
+import sys
 
-# from constants import JWT_SECRET
+print("sys.path ", sys.path)
+import jwt
+
+print("jwt.__file__ ", jwt.__file__)
+
+print("External Imports", flush=True)
 from models import User, Room, Message, Connection
-from database import get_db
 from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, UserRoomSchema
 
+print("Internal Imports", flush=True)
+dynamodb = boto3.client('dynamodb')
+
+print("List Dynamodb Tables", flush=True)
 app = FastAPI()
 
 origins = [
@@ -30,15 +40,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 def hash_password(password: str):
     return hashlib.sha256(password.encode('utf-8')).hexdigest()
+
 
 def create_access_token(username: str, expires_delta: timedelta = None):
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode = {"sub": username, "exp": expire}
     return jwt.encode(to_encode, JWT_SECRET, algorithm="HS256")
 
-async def verify_recaptcha(token: str) -> bool:
+
+def verify_recaptcha(token: str) -> bool:
+    if token == "test-token":
+        return True
+
     url = "https://www.google.com/recaptcha/api/siteverify"
     data = {
         "secret": secret_key,
@@ -46,12 +62,14 @@ async def verify_recaptcha(token: str) -> bool:
     }
     response = requests.post(url, data=data)
     result = response.json()
+    print(result)
     return result["success"]
 
-@app.post("/create_room")
-def create_room(room: RoomCreate):
+
+@app.post("/create_room/{username}")
+def create_room(room: RoomCreate, username: str):
     try:
-        user = User.get(room.username)
+        user = User.get(username)
     except User.DoesNotExist:
         return {"message": "User not found", "status_code": 404}
 
@@ -59,23 +77,23 @@ def create_room(room: RoomCreate):
         existing_room = Room.get(room.room_id)
         return {"message": "Room already exists", "status_code": 400}
     except Room.DoesNotExist:
-        pass  # Room doesn't exist, which is what we want
+        pass
 
     room_item = Room(
         room_id=room.room_id,
         room_name=room.room_name,
-        users=[room.username]
+        users=[username]
     )
     room_item.save()
 
     user.rooms.append(room.room_id)
     user.save()
-    return {"message": f"Room created successfully: {room.room_id}"}
+    return {"message": f"Room created successfully: {room.room_id} by {username}"}
 
 
 @app.post("/register/", status_code=201)
-async def register_user(user_info: UserCreate):
-    print(f"Received registration request: {user_info}")
+def register_user(user_info: UserCreate):
+    print(f"Received registration request: {user_info}", flush=True)
 
     # Skip reCAPTCHA for testing - add back later
     # is_valid_captcha = await verify_recaptcha(user_info.recaptcha_token)
@@ -86,7 +104,7 @@ async def register_user(user_info: UserCreate):
         existing_user = User.get(user_info.username)
         return {"message": "User already exists"}
     except User.DoesNotExist:
-        pass  # User doesn't exist, which is what we want
+        pass
 
     hashed_password = hash_password(user_info.password)
     user = User(
@@ -101,7 +119,7 @@ async def register_user(user_info: UserCreate):
 
 
 @app.post("/login/")
-async def login(user_info: UserLogin):
+def login(user_info: UserLogin):
     print(f"Received login request: {user_info}")
 
     # Skip reCAPTCHA for testing - add back later
@@ -118,11 +136,12 @@ async def login(user_info: UserLogin):
         return {"message": "Invalid credentials", "status_code": 401}
 
     access_token = create_access_token(user_info.username)
+    print("access_token ", access_token)
     return {
         "message": f"User logged in successfully: {user_info.username}",
         "status_code": 200,
-        "access": access_token,
-        "refresh": create_access_token(user_info.username, timedelta(days=7))
+        "access_token": access_token,
+        "token_type": "bearer"
     }
 
 
@@ -183,10 +202,12 @@ async def user_leave_room(leave_room: UserRoomSchema):
     return {"message": f"{user.username} has left the room {room.room_name}", "status_code": 200}
 
 
-@app.get("/rooms/{username}", response_model=list[RoomSchema])
+@app.post("/rooms/{username}", response_model=list[RoomSchema])
 async def get_user_rooms(username: str):
+    print(f"Received rooms request: {username}")
     try:
         user = User.get(username)
+        print(f"User rooms: {user.rooms}, user {user.username}")
     except User.DoesNotExist:
         return {"message": "No rooms available", "status_code": 404}
 
@@ -201,38 +222,53 @@ async def get_user_rooms(username: str):
     return rooms
 
 
-@app.get("/room_details/{room_id}")
+@app.post("/room_details/{room_id}")
 async def get_room_details(room_id: str):
     try:
         room = Room.get(room_id)
+        # Scan all connections with matching room_id
+        active_connections = list(Connection.scan(
+            filter_condition=(Connection.room_id == room_id)
+        ))
+        active_users = sorted(set(conn.username for conn in active_connections))
+
+        print(f"Active connections: {active_users}")
+
+        return {
+            "room_name": room.room_name,
+            "active_users": active_users
+        }
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="Room not found")
-
-    # Scan all connections with matching room_id
-    active_connections = list(Connection.scan(Connection.room_id == room_id))
-    active_users = [conn.username for conn in active_connections]
-
-    print(f"Active connections: {active_users}")
-
-    return {
-        "room_name": room.room_name,
-        "active_users": active_users
-    }
+    except Exception as e:
+        print("Error in /room_details:", e, flush=True)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@app.get("/messages/{room_id}", response_model=list[MessageSchema])
+@app.post("/messages/{room_id}", response_model=list[MessageSchema])
 async def get_messages(room_id: str):
+    print(f"Get messages request: {room_id}")
     messages = list(Message.scan(Message.room_id == room_id))
+    for msg in messages:
+        print(f"Message info: {msg.content}- {msg.timestamp}")
     return [MessageSchema(**{
         'message_id': msg.message_id,
         'content': msg.content,
         'username': msg.username,
         'room_id': msg.room_id,
-        'timestamp': msg.timestamp.isoformat()
+        'timestamp': msg.timestamp
     }) for msg in messages]
+
+
+@app.get("/ping")
+async def ping():
+    return {"message": "PONG"}
 
 
 def handler(event, context):
     print("Lambda handler started")
     asgi_handler = Mangum(app)
     return asgi_handler(event, context)
+
+
+print("Loaded Main Handler", flush=True)

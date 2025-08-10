@@ -1,11 +1,12 @@
 import json
 import uuid
-from datetime import datetime
-
+from datetime import datetime, timezone
 import boto3
+from dateutil.parser import isoparse
+
 from database import get_db
 
-API_GATEWAY_ENDPOINT = 'https://c4plozmo3f.execute-api.us-east-1.amazonaws.com/production/@connections'
+API_GATEWAY_ENDPOINT = 'https://c4plozmo3f.execute-api.us-east-1.amazonaws.com/production'
 apigw_management_client = boto3.client('apigatewaymanagementapi', endpoint_url=API_GATEWAY_ENDPOINT)
 
 dynamodb = boto3.resource("dynamodb")
@@ -16,8 +17,6 @@ message_table = dynamodb.Table("Message")
 
 
 def websocket_connect(event, context):
-    db = get_db()
-    # ConnectionModel = db['connections']
     connection_id = event["requestContext"]["connectionId"]
     username = event.get("queryStringParameters", {}).get("username")
     room_id = event.get("queryStringParameters", {}).get("room_id")
@@ -37,7 +36,7 @@ def websocket_connect(event, context):
         "connection_id": connection_id,
         "username": username,
         "room_id": room_id,
-        "connected_at": datetime.utcnow().isoformat()
+        "connected_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f+0000")
     })
 
     return {"statusCode": 200, "body": "Connected"}
@@ -48,7 +47,9 @@ def websocket_disconnect(event, context):
     return {"statusCode": 200, "body": "Disconnected"}
 
 def websocket_send_message(event, context):
+    print("Raw event:", event)
     body = json.loads(event.get("body", "{}"))
+    print("websocket_send_message body is proper", body)
     action = body.get("action")
 
     if action != "sendmessage":
@@ -57,8 +58,16 @@ def websocket_send_message(event, context):
     content = body.get("content")
     username = body.get("username")
     room_id = body.get("room_id")
-    timestamp = datetime.utcnow().isoformat()
-
+    timestamp = body.get("timestamp")
+    if timestamp is not None:
+        try:
+            # Parse incoming string to datetime object
+            timestamp_dt = isoparse(timestamp)
+        except Exception:
+            timestamp_dt = datetime.now(timezone.utc)
+    else:
+        timestamp_dt = datetime.now(timezone.utc)
+    print("websocket_send_message timestamp is proper",timestamp)
     if not all([content, username, room_id]):
         return {"statusCode": 400, "body": "Missing fields"}
 
@@ -69,7 +78,7 @@ def websocket_send_message(event, context):
         "content": content,
         "username": username,
         "room_id": room_id,
-        "timestamp": timestamp
+        "timestamp": timestamp_dt.strftime('%Y-%m-%dT%H:%M:%S.%f%z')
     }
     message_table.put_item(Item=message_item)
 
@@ -77,7 +86,7 @@ def websocket_send_message(event, context):
     connections = connection_table.scan(
         FilterExpression=boto3.dynamodb.conditions.Attr("room_id").eq(room_id)
     )["Items"]
-
+    print("websocket_send_message connections is proper",connections)
     for conn in connections:
         try:
             apigw_management_client.post_to_connection(

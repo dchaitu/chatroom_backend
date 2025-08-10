@@ -46,3 +46,5 @@ class Connection(Model):
     username = UnicodeAttribute()
     room_id = UnicodeAttribute()
     connected_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+
+print("Loaded Models", flush=True)
