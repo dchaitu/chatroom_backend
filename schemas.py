@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel
 
@@ -14,6 +14,7 @@ class UserCreate(BaseModel):
 class RoomCreate(BaseModel):
     room_id: str
     room_name: str
+    username: str
 
 class UserLogin(BaseModel):
     username: str
@@ -24,6 +25,7 @@ class UserLogin(BaseModel):
 class RoomSchema(BaseModel):
     room_id: str
     room_name: str
+    users: List[str]
 
     class Config:
         from_attributes = True

@@ -1,41 +1,22 @@
+import os
 from models import User, Room, Message, Connection
 
 def create_dynamodb_tables():
-    # Create User table
-    if not User.exists():
-        print("Creating User table...")
-        User.create_table(read_capacity_units=5, write_capacity_units=5, wait=True)
-        print("User table created successfully.")
-    else:
-        print("User table already exists.")
+    print("User table exists: ",User.exists())
+    print("Room table exists: ",Room.exists())
+    table_names = [User, Room, Message, Connection]
 
-    # Create Room table
-    if not Room.exists():
-        print("Creating Room table...")
-        Room.create_table(read_capacity_units=5, write_capacity_units=5, wait=True)
-        print("Room table created successfully.")
-    else:
-        print("Room table already exists.")
 
-    # Create Message table
-    if not Message.exists():
-        print("Creating Message table...")
-        Message.create_table(read_capacity_units=5, write_capacity_units=5, wait=True)
-        print("Message table created successfully.")
-    else:
-        print("Message table already exists.")
+    for table in table_names:
+        if not table.exists():
+            print(f"Creating {table.Meta.table_name} table...")
+            table.create_table(read_capacity_units=5, write_capacity_units=5, wait=True)
+            print(f"{table.Meta.table_name} table created successfully.")
+        else:
+            print(f"{table.Meta.table_name} table already exists.")
 
-    # Create Connection table with GSI
-    if not Connection.exists():
-        print("Creating Connection table...")
-        Connection.create_table(
-            read_capacity_units=5,
-            write_capacity_units=5,
-            wait=True
-        )
-        print("Connection table created successfully.")
-    else:
-        print("Connection table already exists.")
 
 if __name__ == "__main__":
+    ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+    print("ENVIRONMENT in create_tables.py", ENVIRONMENT)
     create_dynamodb_tables()

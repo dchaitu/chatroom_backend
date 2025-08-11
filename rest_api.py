@@ -3,20 +3,16 @@ import hashlib
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import os
 import requests
 import boto3
-import sys
-
-print("sys.path ", sys.path)
 import jwt
 
-print("jwt.__file__ ", jwt.__file__)
 
 print("External Imports", flush=True)
 from models import User, Room, Message, Connection
-from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, UserRoomSchema
+from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserRoomSchema
 
 print("Internal Imports", flush=True)
 dynamodb = boto3.client('dynamodb')
@@ -29,7 +25,7 @@ origins = [
     "http://localhost:3000",
     '*'
 ]
-JWT_SECRET = os.environ.get('JWT_SECRET')
+JWT_SECRET = os.environ.get('JWT_SECRET','p1beyVW)E>b{1gya{,I+yd]>DfN/\9#*')
 secret_key = os.environ.get('RECAPTCHA_SECRET_KEY')
 
 app.add_middleware(
@@ -46,7 +42,7 @@ def hash_password(password: str):
 
 
 def create_access_token(username: str, expires_delta: timedelta = None):
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
+    expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=15))
     to_encode = {"sub": username, "exp": expire}
     return jwt.encode(to_encode, JWT_SECRET, algorithm="HS256")
 
@@ -64,31 +60,6 @@ def verify_recaptcha(token: str) -> bool:
     result = response.json()
     print(result)
     return result["success"]
-
-
-@app.post("/create_room/{username}")
-def create_room(room: RoomCreate, username: str):
-    try:
-        user = User.get(username)
-    except User.DoesNotExist:
-        return {"message": "User not found", "status_code": 404}
-
-    try:
-        existing_room = Room.get(room.room_id)
-        return {"message": "Room already exists", "status_code": 400}
-    except Room.DoesNotExist:
-        pass
-
-    room_item = Room(
-        room_id=room.room_id,
-        room_name=room.room_name,
-        users=[username]
-    )
-    room_item.save()
-
-    user.rooms.append(room.room_id)
-    user.save()
-    return {"message": f"Room created successfully: {room.room_id} by {username}"}
 
 
 @app.post("/register/", status_code=201)
@@ -118,7 +89,7 @@ def register_user(user_info: UserCreate):
     return {"message": f"User created successfully: {user_info.username}"}
 
 
-@app.post("/login/")
+@app.post("/login/", status_code=200)
 def login(user_info: UserLogin):
     print(f"Received login request: {user_info}")
 
@@ -136,16 +107,17 @@ def login(user_info: UserLogin):
         return {"message": "Invalid credentials", "status_code": 401}
 
     access_token = create_access_token(user_info.username)
+    refresh_token = create_access_token(user_info.username, timedelta(days=30))
     print("access_token ", access_token)
+    print("refresh_token ", refresh_token)
     return {
         "message": f"User logged in successfully: {user_info.username}",
-        "status_code": 200,
         "access_token": access_token,
-        "token_type": "bearer"
+        "refresh_token": refresh_token,
     }
 
 
-@app.post("/user/{username}", response_model=UserSchema)
+@app.get("/user/{username}")
 async def get_user_profile(username: str):
     try:
         user = User.get(username)
@@ -153,8 +125,32 @@ async def get_user_profile(username: str):
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")
 
+@app.post("/create_room/", status_code=201)
+def create_room(room: RoomCreate):
+    try:
+        username = room.username
+        user = User.get(username)
+    except User.DoesNotExist:
+        return {"message": "User not found", "status_code": 404}
 
-@app.post("/join_room/")
+    try:
+        existing_room = Room.get(room.room_id)
+        return {"message": "Room already exists", "status_code": 400}
+    except Room.DoesNotExist:
+        pass
+
+    room_item = Room(
+        room_id=room.room_id,
+        room_name=room.room_name,
+        users=[username]
+    )
+    room_item.save()
+
+    user.rooms.append(room.room_id)
+    user.save()
+    return {"message": f"Room created successfully: {room.room_id} by {username}"}
+
+@app.post("/join_room/", status_code=200)
 async def join_room(join_room: UserRoomSchema):
     print(f"Received join request: {join_room.username}, {join_room.room_id}")
 
@@ -176,10 +172,10 @@ async def join_room(join_room: UserRoomSchema):
         room.users.append(join_room.username)
         room.save()
 
-    return {"message": f"{user.username} is joined in the room {room.room_name}", "status_code": 200}
+    return {"message": f"{user.username} is joined in the room {room.room_name}"}
 
 
-@app.post("/leave_room/")
+@app.post("/leave_room/", status_code=200)
 async def user_leave_room(leave_room: UserRoomSchema):
     try:
         user = User.get(leave_room.username)
@@ -199,10 +195,10 @@ async def user_leave_room(leave_room: UserRoomSchema):
         room.users.remove(leave_room.username)
         room.save()
 
-    return {"message": f"{user.username} has left the room {room.room_name}", "status_code": 200}
+    return {"message": f"{user.username} has left the room {room.room_name}"}
 
 
-@app.post("/rooms/{username}", response_model=list[RoomSchema])
+@app.get("/rooms/{username}", response_model=list[RoomSchema])
 async def get_user_rooms(username: str):
     print(f"Received rooms request: {username}")
     try:
@@ -217,12 +213,12 @@ async def get_user_rooms(username: str):
             room = Room.get(room_id)
             rooms.append(room)
         except Room.DoesNotExist:
-            continue
+            raise HTTPException(status_code=404, detail="Room does not exist")
 
     return rooms
 
 
-@app.post("/room_details/{room_id}")
+@app.get("/room_details/{room_id}")
 async def get_room_details(room_id: str):
     try:
         room = Room.get(room_id)
@@ -245,7 +241,7 @@ async def get_room_details(room_id: str):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@app.post("/messages/{room_id}", response_model=list[MessageSchema])
+@app.get("/messages/{room_id}", response_model=list[MessageSchema])
 async def get_messages(room_id: str):
     print(f"Get messages request: {room_id}")
     messages = list(Message.scan(Message.room_id == room_id))
@@ -272,3 +268,6 @@ def handler(event, context):
 
 
 print("Loaded Main Handler", flush=True)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)

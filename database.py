@@ -2,7 +2,21 @@ import boto3
 import os
 from botocore.exceptions import ClientError
 
-dynamodb = boto3.resource('dynamodb', region_name='us-east-1')  # Adjust region as needed
+# Get environment
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+
+# Configure DynamoDB client based on environment
+if ENVIRONMENT == 'development':
+    dynamodb = boto3.resource(
+        'dynamodb',
+        region_name='us-east-1',
+        endpoint_url='http://localhost:8000',
+        aws_access_key_id='TEST',
+        aws_secret_access_key='TEST'
+    )
+else:
+    dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
+
 table_names = {
     'users': os.environ.get('DYNAMODB_USERS_TABLE', 'Users'),
     'rooms': os.environ.get('DYNAMODB_ROOMS_TABLE', 'Rooms'),
