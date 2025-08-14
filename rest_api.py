@@ -1,6 +1,9 @@
+import uuid
+
 print("Starting", flush=True)
 import hashlib
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status, Request, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 from datetime import datetime, timedelta, UTC
@@ -12,7 +15,8 @@ import jwt
 
 print("External Imports", flush=True)
 from models import User, Room, Message, Connection
-from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserRoomSchema
+from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserRoomSchema, UserSchema, \
+    SendMessage
 
 print("Internal Imports", flush=True)
 dynamodb = boto3.client('dynamodb')
@@ -27,6 +31,8 @@ origins = [
 ]
 JWT_SECRET = os.environ.get('JWT_SECRET','p1beyVW)E>b{1gya{,I+yd]>DfN/\9#*')
 secret_key = os.environ.get('RECAPTCHA_SECRET_KEY')
+security = HTTPBearer()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,6 +67,19 @@ def verify_recaptcha(token: str) -> bool:
     print(result)
     return result["success"]
 
+def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        return username
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
 
 @app.post("/register/", status_code=201)
 def register_user(user_info: UserCreate):
@@ -73,7 +92,7 @@ def register_user(user_info: UserCreate):
 
     try:
         existing_user = User.get(user_info.username)
-        return {"message": "User already exists"}
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
     except User.DoesNotExist:
         pass
 
@@ -86,7 +105,8 @@ def register_user(user_info: UserCreate):
         rooms=[]
     )
     user.save()
-    return {"message": f"User created successfully: {user_info.username}"}
+
+    return {"message": f"User created successfully: {user_info.username}", "status_code":status.HTTP_201_CREATED}
 
 
 @app.post("/login/", status_code=200)
@@ -101,10 +121,10 @@ def login(user_info: UserLogin):
     try:
         user = User.get(user_info.username)
     except User.DoesNotExist:
-        return {"message": "Invalid credentials", "status_code": 401}
+        raise HTTPException(detail="Invalid username",status_code=401)
 
     if user.password != hash_password(user_info.password):
-        return {"message": "Invalid credentials", "status_code": 401}
+        raise HTTPException(detail="Invalid password",status_code=401)
 
     access_token = create_access_token(user_info.username)
     refresh_token = create_access_token(user_info.username, timedelta(days=30))
@@ -117,25 +137,31 @@ def login(user_info: UserLogin):
     }
 
 
-@app.get("/user/{username}")
-async def get_user_profile(username: str):
+@app.get("/user/", response_model=UserSchema)
+async def get_user_profile(username: str = Depends(get_current_user)):
     try:
         user = User.get(username)
-        return user
+        user_data = {
+            "username": user.username,
+            "fullname": user.fullname,
+            "email": user.email
+        }
+        print("user_data",user_data)
+        return UserSchema(**user_data)
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")
 
 @app.post("/create_room/", status_code=201)
-def create_room(room: RoomCreate):
+def create_room(room: RoomCreate, username: str = Depends(get_current_user)):
     try:
-        username = room.username
         user = User.get(username)
     except User.DoesNotExist:
-        return {"message": "User not found", "status_code": 404}
+        raise HTTPException(status_code=404, detail="User not found")
 
     try:
         existing_room = Room.get(room.room_id)
-        return {"message": "Room already exists", "status_code": 400}
+        raise HTTPException(status_code=400, detail="Room already exists")
+
     except Room.DoesNotExist:
         pass
 
@@ -151,61 +177,61 @@ def create_room(room: RoomCreate):
     return {"message": f"Room created successfully: {room.room_id} by {username}"}
 
 @app.post("/join_room/", status_code=200)
-async def join_room(join_room: UserRoomSchema):
-    print(f"Received join request: {join_room.username}, {join_room.room_id}")
+async def join_room(room_id: str, username: str = Depends(get_current_user)):
+    print(f"Received join request: {username}, {room_id}")
 
     try:
-        user = User.get(join_room.username)
+        user = User.get(username)
     except User.DoesNotExist:
-        return {"message": "User does not exist", "status_code": 404}
+        raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        room = Room.get(join_room.room_id)
+        room = Room.get(room_id)
     except Room.DoesNotExist:
-        return {"message": "Room does not exist", "status_code": 404}
+        raise HTTPException(status_code=404, detail="Room not found")
 
-    if join_room.room_id not in user.rooms:
-        user.rooms.append(join_room.room_id)
+    if room_id not in user.rooms:
+        user.rooms.append(room_id)
         user.save()
 
-    if join_room.username not in room.users:
-        room.users.append(join_room.username)
+    if username not in room.users:
+        room.users.append(username)
         room.save()
 
     return {"message": f"{user.username} is joined in the room {room.room_name}"}
 
 
 @app.post("/leave_room/", status_code=200)
-async def user_leave_room(leave_room: UserRoomSchema):
+async def user_leave_room(room_id: str, username: str = Depends(get_current_user)):
     try:
-        user = User.get(leave_room.username)
+        user = User.get(username)
     except User.DoesNotExist:
-        return {"message": "User does not exist", "status_code": 404}
+        raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        room = Room.get(leave_room.room_id)
+        room = Room.get(room_id)
     except Room.DoesNotExist:
-        return {"message": "Room does not exist", "status_code": 404}
+        raise HTTPException(status_code=404, detail="Room not found")
 
-    if leave_room.room_id in user.rooms:
-        user.rooms.remove(leave_room.room_id)
+    if room_id in user.rooms:
+        user.rooms.remove(room_id)
         user.save()
 
-    if leave_room.username in room.users:
-        room.users.remove(leave_room.username)
+    if username in room.users:
+        room.users.remove(username)
         room.save()
 
     return {"message": f"{user.username} has left the room {room.room_name}"}
 
 
-@app.get("/rooms/{username}", response_model=list[RoomSchema])
-async def get_user_rooms(username: str):
+@app.get("/rooms/", response_model=list[RoomSchema])
+async def get_user_rooms(username: str=Depends(get_current_user)):
     print(f"Received rooms request: {username}")
     try:
         user = User.get(username)
         print(f"User rooms: {user.rooms}, user {user.username}")
     except User.DoesNotExist:
-        return {"message": "No rooms available", "status_code": 404}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     rooms = []
     for room_id in user.rooms:
@@ -226,13 +252,13 @@ async def get_room_details(room_id: str):
         active_connections = list(Connection.scan(
             filter_condition=(Connection.room_id == room_id)
         ))
-        active_users = sorted(set(conn.username for conn in active_connections))
-
-        print(f"Active connections: {active_users}")
+        # active_users = sorted(set(conn.username for conn in active_connections))
+        room_members = room.users
+        print(f"Active connections: {room_members}")
 
         return {
             "room_name": room.room_name,
-            "active_users": active_users
+            "room_members": room_members
         }
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="Room not found")
@@ -255,6 +281,29 @@ async def get_messages(room_id: str):
         'timestamp': msg.timestamp
     }) for msg in messages]
 
+@app.post("/send_message/", status_code=201)
+async def send_message(message: SendMessage, username: str = Depends(get_current_user)):
+    print(f"Received send_message request: {message}")
+    try:
+        user = User.get(username)
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        room = Room.get(message.room_id)
+    except Room.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Save message
+    message_item = Message(
+        message_id=str(uuid.uuid4()),
+        content=message.content,
+        username=user.username,
+        room_id=message.room_id
+    )
+    message_item.save()
+
+    return {"message": "Message sent successfully by {} in {}".format(username, room.room_name)}
 
 @app.get("/ping")
 async def ping():

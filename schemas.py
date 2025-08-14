@@ -14,7 +14,6 @@ class UserCreate(BaseModel):
 class RoomCreate(BaseModel):
     room_id: str
     room_name: str
-    username: str
 
 class UserLogin(BaseModel):
     username: str
@@ -60,9 +59,7 @@ class MessageCreate(BaseModel):
     room_id: str
 
 class SendMessage(BaseModel):
-    message_id: str
     content: str
-    username: str
-    timestamp: datetime
+    room_id: str
 
 
