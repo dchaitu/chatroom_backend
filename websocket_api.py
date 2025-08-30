@@ -1,20 +1,37 @@
+import asyncio
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 import boto3
 from dateutil.parser import isoparse
-
-from database import get_db
+import websockets
 
 API_GATEWAY_ENDPOINT = 'https://c4plozmo3f.execute-api.us-east-1.amazonaws.com/production'
+# LOCAL_ENDPOINT = 'http://0.0.0.0:8080'
 apigw_management_client = boto3.client('apigatewaymanagementapi', endpoint_url=API_GATEWAY_ENDPOINT)
 
-dynamodb = boto3.resource("dynamodb")
+MODE = os.getenv("APP_MODE", "local")
+LOCAL_ENDPOINT = "http://localhost:8000"
+
+# ---- DYNAMODB ----
+if MODE == "local":
+    dynamodb = boto3.resource("dynamodb", endpoint_url=LOCAL_ENDPOINT)
+else:
+    dynamodb = boto3.resource("dynamodb")
+
 user_table = dynamodb.Table("User")
 room_table = dynamodb.Table("Room")
 connection_table = dynamodb.Table("Connection")
 message_table = dynamodb.Table("Message")
 
+active_connections = {}
+apigw_client = None
+if MODE == "aws":
+    apigw_client = boto3.client(
+        "apigatewaymanagementapi",
+        endpoint_url=API_GATEWAY_ENDPOINT
+    )
 
 def websocket_connect(event, context):
     connection_id = event["requestContext"]["connectionId"]
@@ -46,8 +63,7 @@ def websocket_disconnect(event, context):
     connection_table.delete_item(Key={"connection_id": connection_id})
     return {"statusCode": 200, "body": "Disconnected"}
 
-def websocket_send_message(event, context):
-    print("Raw event:", event)
+async def websocket_send_message(event, context):
     body = json.loads(event.get("body", "{}"))
     print("websocket_send_message body is proper", body)
     action = body.get("action")
@@ -58,7 +74,7 @@ def websocket_send_message(event, context):
     content = body.get("content")
     username = body.get("username")
     room_id = body.get("room_id")
-    timestamp = body.get("timestamp")
+    timestamp = body.get("timestamp",datetime.now(timezone.utc).isoformat())
     if timestamp is not None:
         try:
             # Parse incoming string to datetime object
@@ -86,6 +102,11 @@ def websocket_send_message(event, context):
     connections = connection_table.scan(
         FilterExpression=boto3.dynamodb.conditions.Attr("room_id").eq(room_id)
     )["Items"]
+    connections = connection_table.scan()["Items"]
+    for conn_ws, conn_id in active_connections.items():
+        if any([conn["room_id"] == room_id for conn in connections]):
+            await conn_ws.send(json.dumps(message_item))
+
     print("websocket_send_message connections is proper",connections)
     for conn in connections:
         try:
@@ -98,7 +119,8 @@ def websocket_send_message(event, context):
 
     return {"statusCode": 200, "body": "Message sent"}
 
-def handler(event, context):
+async def handler(event, context):
+    print("Raw event:", event)
     route_key = event.get("requestContext", {}).get("routeKey")
     if route_key == "$connect":
         return websocket_connect(event, context)

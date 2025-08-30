@@ -29,7 +29,8 @@ class Room(Model):
     room_id = UnicodeAttribute(hash_key=True)
     room_name = UnicodeAttribute()
     users = ListAttribute(default=list)  # List of usernames
-
+    admins = ListAttribute(default=list)  # List of admin usernames
+    description = UnicodeAttribute(default="Add a room description")
 
 class Message(Model):
     class Meta:

@@ -14,6 +14,16 @@ class UserCreate(BaseModel):
 class RoomCreate(BaseModel):
     room_id: str
     room_name: str
+    description: str
+
+class RoomUpdate(BaseModel):
+    room_id: str
+    room_name: Optional[str] = None
+    description: Optional[str] = None
+
+class MakeRoomAdmin(BaseModel):
+    room_id: str
+    username: str
 
 class UserLogin(BaseModel):
     username: str
@@ -24,7 +34,9 @@ class UserLogin(BaseModel):
 class RoomSchema(BaseModel):
     room_id: str
     room_name: str
+    description: str
     users: List[str]
+    admins: List[str]
 
     class Config:
         from_attributes = True

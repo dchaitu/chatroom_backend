@@ -15,8 +15,8 @@ import jwt
 
 print("External Imports", flush=True)
 from models import User, Room, Message, Connection
-from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserRoomSchema, UserSchema, \
-    SendMessage
+from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, \
+    SendMessage, RoomUpdate, MakeRoomAdmin
 
 print("Internal Imports", flush=True)
 dynamodb = boto3.client('dynamodb')
@@ -111,12 +111,7 @@ def register_user(user_info: UserCreate):
 
 @app.post("/login/", status_code=200)
 def login(user_info: UserLogin):
-    print(f"Received login request: {user_info}")
 
-    # Skip reCAPTCHA for testing - add back later
-    # is_valid_captcha = await verify_recaptcha(user_info.recaptcha_token)
-    # if not is_valid_captcha:
-    #     raise HTTPException(status_code=400, detail="Invalid reCAPTCHA")
 
     try:
         user = User.get(user_info.username)
@@ -168,13 +163,36 @@ def create_room(room: RoomCreate, username: str = Depends(get_current_user)):
     room_item = Room(
         room_id=room.room_id,
         room_name=room.room_name,
-        users=[username]
+        users=[username],
+        description=room.description,
+        admins=[username]
     )
     room_item.save()
 
     user.rooms.append(room.room_id)
     user.save()
     return {"message": f"Room created successfully: {room.room_id} by {username}"}
+
+@app.put('/create_room/', status_code=201)
+def update_room(room: RoomUpdate, username: str = Depends(get_current_user)):
+    try:
+        user = User.get(username)
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        existing_room = Room.get(room.room_id)
+        if room.room_name:
+            existing_room.room_name = room.room_name
+        if room.description:
+            existing_room.description = room.description
+        existing_room.save()
+        return {"message": f"Updated Room fields successfully: {room.room_name}"}
+
+    except Room.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+
 
 @app.post("/join_room/", status_code=200)
 async def join_room(room_id: str, username: str = Depends(get_current_user)):
@@ -243,6 +261,26 @@ async def get_user_rooms(username: str=Depends(get_current_user)):
 
     return rooms
 
+@app.post("/make_admin/", status_code=200, response_model= RoomSchema)
+async def create_room_admin(room_admin:MakeRoomAdmin):
+    try:
+        room = Room.get(room_admin.room_id)
+        room.admins.append(room_admin.username)
+        room.save()
+
+    except Room.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    return room
+
+
+@app.get("/rooms/all", response_model=list[RoomSchema])
+async def get_all_rooms():
+    try:
+        rooms = list(Room.scan())
+    except Room.DoesNotExist:
+        raise HTTPException(status_code=404, detail="No rooms found")
+    return rooms
 
 @app.get("/room_details/{room_id}")
 async def get_room_details(room_id: str):
@@ -258,7 +296,8 @@ async def get_room_details(room_id: str):
 
         return {
             "room_name": room.room_name,
-            "room_members": room_members
+            "room_members": room_members,
+            "description": room.description
         }
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="Room not found")
@@ -319,4 +358,4 @@ def handler(event, context):
 print("Loaded Main Handler", flush=True)
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run("rest_api:app", host="localhost", port=8080, reload=True)
