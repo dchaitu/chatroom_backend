@@ -1,5 +1,8 @@
 import os
-from models import User, Room, Message, Connection
+from models import User, Room, Message, Connection, MembershipRequest
+
+
+# Invite, JoinRequest
 
 def create_dynamodb_tables():
     print("User table exists: ",User.exists())
@@ -17,6 +20,18 @@ def create_dynamodb_tables():
 
 
 if __name__ == "__main__":
-    ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
-    print("ENVIRONMENT in create_tables.py", ENVIRONMENT)
-    create_dynamodb_tables()
+    # ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
+    # print("ENVIRONMENT in create_tables.py", ENVIRONMENT)
+    # if Invite.exists():
+    #     Invite.delete_table()
+    #     print("Invite table deleted successfully.")
+    # if not MembershipRequest.exists():
+    #     MembershipRequest.create_table(read_capacity_units=5, write_capacity_units=5, wait=True)
+    #     print("MembershipRequest table created successfully.")
+    # create_dynamodb_tables()
+    room_id = "1"
+    username = "chaitu"
+    room = Room.get(room_id)
+    if username in room.users:
+        room.users.remove(username)  # remove from list
+        room.save()

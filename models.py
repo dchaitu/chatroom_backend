@@ -1,8 +1,8 @@
 import logging
+from pynamodb.indexes import GlobalSecondaryIndex, AllProjection
 from pynamodb.models import Model
 from pynamodb.attributes import UnicodeAttribute, UTCDateTimeAttribute, ListAttribute
-from datetime import datetime, timezone
-
+from datetime import datetime, timezone, timedelta
 
 # Enable Pynamodb debugging
 logging.basicConfig(level=logging.DEBUG)
@@ -55,5 +55,28 @@ class Connection(Model):
     username = UnicodeAttribute()
     room_id = UnicodeAttribute()
     connected_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+
+
+class UsernameStatusIndex(GlobalSecondaryIndex):
+    class Meta:
+        index_name = "username-status-index"
+        projection = AllProjection()
+        read_capacity_units = 1
+        write_capacity_units = 1
+
+    username = UnicodeAttribute(hash_key=True)
+    status = UnicodeAttribute(range_key=True)
+
+class MembershipRequest(Model):
+    class Meta:
+        table_name = "MembershipRequest"
+        host = "http://localhost:8000"
+
+    room_id = UnicodeAttribute(hash_key=True)         # Room where request applies
+    username = UnicodeAttribute(range_key=True)       # User involved (either invited or requesting)
+    request_type = UnicodeAttribute()                 # "invite" | "join_request"
+    status = UnicodeAttribute(default="pending")      # "pending" | "accepted" | "rejected"
+    created_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+    username_status_index = UsernameStatusIndex()
 
 print("Loaded Models", flush=True)

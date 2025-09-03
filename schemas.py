@@ -74,4 +74,9 @@ class SendMessage(BaseModel):
     content: str
     room_id: str
 
-
+class MembershipRequestSchema(BaseModel):
+    room_id: str
+    username: str
+    request_type: str
+    status: str
+    created_at: Optional[datetime]
