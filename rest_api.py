@@ -11,7 +11,7 @@ import boto3
 
 print("External Imports", flush=True)
 from models import User, Room, Message, Connection
-from schemas import UserCreate, RoomCreate, UserLogin, MessageSchema, RoomSchema, UserSchema, \
+from schemas import MessageSchema, RoomSchema, UserSchema, \
     SendMessage, RoomUpdate, MakeRoomAdmin
 from room_routers import router as room_router
 from user_routers import router as user_router

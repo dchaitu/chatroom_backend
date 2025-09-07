@@ -8,11 +8,10 @@ from datetime import datetime, timezone, timedelta
 logging.basicConfig(level=logging.DEBUG)
 
 
-
 class User(Model):
     class Meta:
         table_name = "User"
-        host = 'http://localhost:8000'
+        host = "http://localhost:8000"
 
     username = UnicodeAttribute(hash_key=True)
     password = UnicodeAttribute()
@@ -24,7 +23,7 @@ class User(Model):
 class Room(Model):
     class Meta:
         table_name = "Room"
-        host = 'http://localhost:8000'
+        host = "http://localhost:8000"
 
     room_id = UnicodeAttribute(hash_key=True)
     room_name = UnicodeAttribute()
@@ -35,21 +34,19 @@ class Room(Model):
 class Message(Model):
     class Meta:
         table_name = "Message"
-        host = 'http://localhost:8000'
-
+        host = "http://localhost:8000"
 
     message_id = UnicodeAttribute(hash_key=True)
     content = UnicodeAttribute()
     timestamp = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
-    username = UnicodeAttribute()   # user who sent it
+    username = UnicodeAttribute()  # user who sent it
     room_id = UnicodeAttribute()
 
 
 class Connection(Model):
     class Meta:
         table_name = "Connection"
-        host = 'http://localhost:8000'
-
+        host = "http://localhost:8000"
 
     connection_id = UnicodeAttribute(hash_key=True)
     username = UnicodeAttribute()
@@ -66,17 +63,20 @@ class UsernameStatusIndex(GlobalSecondaryIndex):
 
     username = UnicodeAttribute(hash_key=True)
     status = UnicodeAttribute(range_key=True)
+    request_type = UnicodeAttribute()
 
 class MembershipRequest(Model):
     class Meta:
         table_name = "MembershipRequest"
         host = "http://localhost:8000"
 
-    room_id = UnicodeAttribute(hash_key=True)         # Room where request applies
-    username = UnicodeAttribute(range_key=True)       # User involved (either invited or requesting)
-    request_type = UnicodeAttribute()                 # "invite" | "join_request"
-    status = UnicodeAttribute(default="pending")      # "pending" | "accepted" | "rejected"
+    room_id = UnicodeAttribute(hash_key=True)  # Room where request applies
+    username = UnicodeAttribute(range_key=True)  # User involved (either invited or requesting)
+    request_type = UnicodeAttribute()  # "invite" | "join_request"
+    status = UnicodeAttribute(default="pending")  # "pending" | "accepted" | "rejected"
+    created_by = UnicodeAttribute()
     created_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     username_status_index = UsernameStatusIndex()
+
 
 print("Loaded Models", flush=True)

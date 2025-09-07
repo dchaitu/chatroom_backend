@@ -79,4 +79,9 @@ class MembershipRequestSchema(BaseModel):
     username: str
     request_type: str
     status: str
+    created_by: str
     created_at: Optional[datetime]
+
+class UserActionDTO(BaseModel):
+    requested_user: str
+    action: str
