@@ -3,8 +3,14 @@ from typing import List
 from fastapi import APIRouter, HTTPException, Depends, status
 
 from constants import get_current_user
-from models import User, Room, Connection,  MembershipRequest
-from schemas import RoomCreate, RoomUpdate, RoomSchema, MembershipRequestSchema, UserActionDTO
+from models import User, Room, Connection, MembershipRequest
+from schemas import (
+    RoomCreate,
+    RoomUpdate,
+    RoomSchema,
+    MembershipRequestSchema,
+    UserActionDTO, UserSchema, AddUserToRoomDTO,
+)
 
 router = APIRouter(prefix="/room", tags=["Room"])
 
@@ -58,29 +64,6 @@ def update_room(room: RoomUpdate, username: str = Depends(get_current_user)):
 
 
 
-@router.post("/join/", status_code=200)
-async def join_room(room_id: str, username: str = Depends(get_current_user)):
-    print(f"Received join request: {username}, {room_id}")
-
-    try:
-        user = User.get(username)
-    except User.DoesNotExist:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    try:
-        room = Room.get(room_id)
-    except Room.DoesNotExist:
-        raise HTTPException(status_code=404, detail="Room not found")
-
-    if room_id not in user.rooms:
-        user.rooms.append(room_id)
-        user.save()
-
-    if username not in room.users:
-        room.users.append(username)
-        room.save()
-
-    return {"message": f"{user.username} is joined in the room {room.room_name}"}
 
 
 @router.post("/leave/", status_code=200)
@@ -116,9 +99,10 @@ async def get_user_rooms(username: str = Depends(get_current_user)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
-
+    room_ids = user.rooms
     rooms = []
-    for room_id in user.rooms:
+    room_ids = list(set([room_id for room_id in room_ids]))
+    for room_id in room_ids:
         try:
             room = Room.get(room_id)
             rooms.append(room)
@@ -128,13 +112,27 @@ async def get_user_rooms(username: str = Depends(get_current_user)):
     return rooms
 
 
-@router.get("/all/", response_model=list[RoomSchema])
+@router.get("/all-rooms/", response_model=list[RoomSchema])
 async def get_all_rooms():
     try:
         rooms = list(Room.scan())
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="No rooms found")
     return rooms
+
+@router.get("/available-rooms/", response_model=list[RoomSchema])
+async def get_available_rooms(username: str = Depends(get_current_user)):
+
+    user = User.get(username)
+    if not user.rooms:  # if user has no rooms, return empty list
+        return []
+    current_rooms = list(Room.batch_get(user.rooms))
+    print(f"current_rooms :- {[room.room_name for room in current_rooms]}")
+    print(f"user.rooms :- {user.rooms}")
+    all_rooms = list(Room.scan())
+    available_rooms = [r for r in all_rooms if r.room_id not in user.rooms]
+    print(f"available_rooms :- {[room.room_name for room in available_rooms]}")
+    return available_rooms
 
 
 @router.get("/room_details/{room_id}/")
@@ -161,36 +159,38 @@ async def get_room_details(room_id: str):
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@router.post("/{room_id}/invite/", status_code=201)
+@router.post("/invite/", status_code=201)
 async def admin_add_user_to_room(
-    room_id: str, invited_to: str, admin: str = Depends(get_current_user)
+    add_user_to_room: AddUserToRoomDTO, current_user: str = Depends(get_current_user)
 ):
     """Admin invites a user to join a room."""
+    room_id = add_user_to_room.room_id
+    invited_user = add_user_to_room.added_user
     try:
         room = Room.get(room_id)
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="Room not found")
 
-    if admin not in room.admins:
+    if current_user not in room.admins:
         raise HTTPException(
             status_code=403, detail="Only admins can invite users to this room."
         )
 
     # Check if user already in room
-    if invited_to in room.users:
+    if invited_user in room.users:
         raise HTTPException(status_code=400, detail="User already in room.")
 
     # Create invite
 
     membership_request = MembershipRequest(
         room_id=room_id,
-        username=invited_to,
+        username=invited_user,
         status="pending",
         request_type="invite",
-        created_by=admin
+        created_by=current_user,
     )
     membership_request.save()
-    return {"message": f"Invite sent to {invited_to} for room {room_id}"}
+    return {"message": f"Invite sent to {invited_user} for room {room_id}"}
 
 
 @router.post("/{room_id}/request/", status_code=201)
@@ -205,12 +205,13 @@ def user_request_join_room(room_id: str, username: str = Depends(get_current_use
     if username in room.users:
         raise HTTPException(status_code=400, detail="Already a member of the room.")
 
-
     # Check if already requested to join the room
     try:
         membership_request = MembershipRequest.get(room_id, username)
         if membership_request.status == "pending":
-            raise HTTPException(status_code=400, detail="Already requested to join the room.")
+            raise HTTPException(
+                status_code=400, detail="Already requested to join the room."
+            )
     except:
         pass
 
@@ -220,7 +221,7 @@ def user_request_join_room(room_id: str, username: str = Depends(get_current_use
         username=username,
         status="pending",
         request_type="join_request",
-        created_by=username
+        created_by=username,
     )
     membership_request.save()
     return {"message": f"Join request sent for room {room_id} by {username} to approve"}
@@ -229,97 +230,102 @@ def user_request_join_room(room_id: str, username: str = Depends(get_current_use
 # Endpoint for admin to accept/reject a user
 @router.post("/admin/request/{room_id}/respond/", status_code=200)
 async def admin_respond_to_room_membership_request(
-        room_id: str,
-        user_action: UserActionDTO,
-        current_user: str = Depends(get_current_user)
+    room_id: str,
+    user_action: UserActionDTO,
+    current_user: str = Depends(get_current_user),
 ):
     """Admin accepts or rejects a room joining request"""
+    try:
+        room = Room.get(room_id)
+        if current_user not in room.admins:
+            raise HTTPException(status_code=403, detail="Only admins can respond to requests")
+    except Room.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Room not found")
+
     action = user_action.action
     user_invited = user_action.requested_user
     try:
         print("Received room membership request response:")
-        member_request = MembershipRequest.get(room_id, current_user)
+        member_request = MembershipRequest.get(room_id, user_invited)
     except MembershipRequest.DoesNotExist:
         raise HTTPException(status_code=404, detail="Invite not found")
 
     # Verify the responding user is an admin of the room
-    try:
-        room = Room.get(room_id)
-    except Room.DoesNotExist:
-        raise HTTPException(status_code=404, detail="Room not found")
 
-    if member_request.request_type == "invite":
+    if action == "accept":
+        # Add user to room
+        if user_invited not in room.users:
+            room.users.append(user_invited)
+            room.save()
+        print(f"User {user_invited} added to room {room_id}")
 
+        # Update invite status
+        try:
+            user = User.get(user_invited)
+            user.rooms.append(room_id)
+            user.save()
+            print(f"**User {user_invited} added to room {room_id}")
+        except User.DoesNotExist:
+            raise HTTPException(status_code=404, detail="User not found")
+
+    # elif member_request.request_type == "join_request":
+    if user_invited in room.admins and user_invited not in room.users:
         if action == "accept":
-            # Add user to room
-            if user_invited not in room.users:
-                room.users.append(user_invited)
-                room.save()
-
-            # Update invite status
-            try:
-                user = User.get(user_invited)
-                user.rooms.append(room_id)
-                user.save()
-            except User.DoesNotExist:
-                raise HTTPException(status_code=404, detail="User not found")
-
-    elif member_request.request_type == "join_request":
-        if user_invited in room.admins and user_invited not in room.users:
-            if action == "accept":
-                room.users.append(user_invited)
-                room.save()
-
+            room.users.append(user_invited)
+            room.save()
 
     member_request.status = "accepted" if action == "accept" else "rejected"
     member_request.save()
 
-
-    return {"message": f"{action} Performed successfully on {user_invited} for room {room_id}"}
-
+    return {
+        "message": f"{action} Performed successfully on {user_invited} for room {room_id}"
+    }
 
 
 @router.get("/admin/pending-invites/", response_model=List[MembershipRequestSchema])
 async def get_pending_invites(username: str = Depends(get_current_user)):
     """Get all pending invites for rooms from other users to the admin"""
     # Get all rooms where user is admin
-    user_invitees_rooms = MembershipRequest.username_status_index.query(
-        username,
-        MembershipRequest.status == "pending")
-    print(f"user_invitees_rooms: {user_invitees_rooms}")
-    pending_invites = []
-    for invite in user_invitees_rooms:
-        if invite.request_type == "invite":
-            # only show invites, not join_requests
-            pending_invites.append(invite)
+    pending_invitees = list(MembershipRequest.scan(
+        filter_condition=(MembershipRequest.status == "pending") & (MembershipRequest.request_type == "invite")
+    ))
+    room_ids = {req.room_id for req in pending_invitees}
+    print(f'room_ids: {room_ids}')
+    #  Rooms for which user is admin
+    rooms = {room.room_id: room for room in Room.batch_get(room_ids)}
+
+    print(f"len of user_invitees_rooms: {len(pending_invitees)}")
+    pending_invites = [req for req in pending_invitees
+                             if username in rooms.get(req.room_id, Room()).admins
+                             ]
+    print(f"pending_invites: {pending_invites}")
+
 
     return pending_invites
 
 
-@router.get("/admin/pending-join-requests/", response_model=List[dict])
+@router.get("/admin/pending-join-requests/", response_model=List[MembershipRequestSchema])
 async def get_pending_join_requests(username: str = Depends(get_current_user)):
     """Get all pending invites for rooms from other users to the admin"""
     # Get all rooms where user is admin
-    user_invitees_rooms = MembershipRequest.username_status_index.query(
-        username,
-        MembershipRequest.status == "pending")
-    print(f"user_invitees_rooms: {user_invitees_rooms}")
-    pending_join_requests = []
-    for invite in user_invitees_rooms:
-        print(f"invite: {invite}")
-        if invite.request_type == "join_request":
-            # only show invites, not join_requests
-            pending_join_requests.append({
-                "room_id": invite.room_id,
-                "username": username,
-                "status": invite.status,
-                "invited_at": invite.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            })
+    pending_invitees = list(MembershipRequest.scan(
+        filter_condition=(MembershipRequest.status == "pending") & (MembershipRequest.request_type == "join_request")
+    ))
+    room_ids = {req.room_id for req in pending_invitees}
+    print(f'room_ids: {room_ids}')
+    #  Rooms for which user is admin
+    rooms = {room.room_id: room for room in Room.batch_get(room_ids)}
+
+    print(f"len of user_invitees_rooms: {len(pending_invitees)}")
+    pending_join_requests = [req for req in pending_invitees
+                             if username in rooms.get(req.room_id, Room()).admins
+                             ]
+
 
     return pending_join_requests
 
 
-@router.get("/all_invitees-and-join-requests/", response_model=list[MembershipRequestSchema])
+@router.get("/all-requests/", response_model=list[MembershipRequestSchema])
 def get_all_invitees_and_join_requests():
     try:
         membership_requests = list(MembershipRequest.scan())
@@ -327,11 +333,10 @@ def get_all_invitees_and_join_requests():
         raise HTTPException(status_code=404, detail="No rooms found")
     return membership_requests
 
-
-# @router.get("/all_join_requests/", response_model=list[JoinRequestSchema])
-# def get_all_join_requests():
-#     try:
-#         join_requests = list(JoinRequest.scan())
-#     except JoinRequest.DoesNotExist:
-#         raise HTTPException(status_code=404, detail="No join requests found")
-#     return join_requests
+@router.get("/all-users/", response_model=list[UserSchema])
+def get_all_users():
+    try:
+        users = list(User.scan())
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="No users found")
+    return users

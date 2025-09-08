@@ -85,3 +85,7 @@ class MembershipRequestSchema(BaseModel):
 class UserActionDTO(BaseModel):
     requested_user: str
     action: str
+
+class AddUserToRoomDTO(BaseModel):
+    room_id: str
+    added_user: str

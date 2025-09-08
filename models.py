@@ -65,6 +65,15 @@ class UsernameStatusIndex(GlobalSecondaryIndex):
     status = UnicodeAttribute(range_key=True)
     request_type = UnicodeAttribute()
 
+class StatusIndex(GlobalSecondaryIndex):
+    class Meta:
+        index_name = "status-index"
+        projection = AllProjection()
+
+    status = UnicodeAttribute(hash_key=True)   # <-- status as partition key
+    room_id = UnicodeAttribute()
+    username = UnicodeAttribute()
+
 class MembershipRequest(Model):
     class Meta:
         table_name = "MembershipRequest"
@@ -77,6 +86,6 @@ class MembershipRequest(Model):
     created_by = UnicodeAttribute()
     created_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     username_status_index = UsernameStatusIndex()
-
+    status_index = StatusIndex()
 
 print("Loaded Models", flush=True)
