@@ -1,4 +1,6 @@
 import logging
+import uuid
+
 from pynamodb.indexes import GlobalSecondaryIndex, AllProjection
 from pynamodb.models import Model
 from pynamodb.attributes import UnicodeAttribute, UTCDateTimeAttribute, ListAttribute
@@ -18,7 +20,7 @@ class User(Model):
     fullname = UnicodeAttribute()
     email = UnicodeAttribute()
     rooms = ListAttribute(default=list)  # List of room IDs
-
+    avatar = UnicodeAttribute(default='😁')
 
 class Room(Model):
     class Meta:
@@ -36,11 +38,14 @@ class Message(Model):
         table_name = "Message"
         host = "http://localhost:8000"
 
-    message_id = UnicodeAttribute(hash_key=True)
+    message_id = UnicodeAttribute(hash_key=True, default=str(uuid.uuid4()))
     content = UnicodeAttribute()
     timestamp = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     username = UnicodeAttribute()  # user who sent it
     room_id = UnicodeAttribute()
+
+    def __str__(self):
+        return str(self.username) + " sent " + str(self.content) + " to " + str(self.room_id)
 
 
 class Connection(Model):
@@ -48,7 +53,7 @@ class Connection(Model):
         table_name = "Connection"
         host = "http://localhost:8000"
 
-    connection_id = UnicodeAttribute(hash_key=True)
+    connection_id = UnicodeAttribute(hash_key=True, default=str(uuid.uuid4()))
     username = UnicodeAttribute()
     room_id = UnicodeAttribute()
     connected_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
@@ -87,5 +92,50 @@ class MembershipRequest(Model):
     created_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     username_status_index = UsernameStatusIndex()
     status_index = StatusIndex()
+
+
+class RoomMembership(Model):
+    class Meta:
+        table_name = "RoomMembership"
+        host = "http://localhost:8000"
+
+    room_id = UnicodeAttribute(hash_key=True)   # PK
+    username = UnicodeAttribute(range_key=True) # SK
+    joined_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+    last_read_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+    last_read_message_id = UnicodeAttribute(null=True)
+
+class UserMessage(Model):
+    class Meta:
+        table_name = "UserMessage"
+        host = "http://localhost:8000"
+
+    message_id = UnicodeAttribute(hash_key=True)
+    username = UnicodeAttribute(range_key=True)
+    read_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+
+
+class ReplyThread(Model):
+    class Meta:
+        table_name = "ReplyThread"
+        host = "http://localhost:8000"
+
+    thread_id = UnicodeAttribute(hash_key=True,  default=str(uuid.uuid4()))
+    reply_id = UnicodeAttribute(range_key=True, default=str(uuid.uuid4()))
+    message_id = UnicodeAttribute() # using as FK
+    content = UnicodeAttribute()
+    username = UnicodeAttribute()
+    timestamp = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+
+class UserReaction(Model):
+    class Meta:
+        table_name = "UserReaction"
+        host = "http://localhost:8000"
+
+    message_id = UnicodeAttribute(hash_key=True,  default=str(uuid.uuid4()))
+    username = UnicodeAttribute(range_key=True)
+    reaction_type = UnicodeAttribute()
+    reacted_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
+
 
 print("Loaded Models", flush=True)

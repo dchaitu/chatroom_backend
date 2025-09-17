@@ -1,15 +1,16 @@
+from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Depends, status
 
 from constants import get_current_user
-from models import User, Room, Connection, MembershipRequest
+from models import User, Room, Connection, MembershipRequest, RoomMembership, Message, UserMessage
 from schemas import (
     RoomCreate,
     RoomUpdate,
     RoomSchema,
     MembershipRequestSchema,
-    UserActionDTO, UserSchema, AddUserToRoomDTO,
+    UserActionDTO, UserSchema, AddUserToRoomDTO, RoomMembershipDTO,
 )
 
 router = APIRouter(prefix="/room", tags=["Room"])
@@ -31,7 +32,7 @@ def create_room(room: RoomCreate, username: str = Depends(get_current_user)):
 
     room_item = Room(
         room_id=room.room_id,
-        room_name=room.room_name,
+        room_name=room.room_name.strip(' '),
         users=[username],
         description=room.description,
         admins=[username],
@@ -89,6 +90,38 @@ async def user_leave_room(room_id: str, username: str = Depends(get_current_user
     return {"message": f"{user.username} has left the room {room.room_name}"}
 
 
+@router.post("/{room_id}/mark-read")
+async def mark_as_read(room_id: str, username: str = Depends(get_current_user)):
+    """Update last_read_at when user opens a room"""
+    membership = RoomMembership.get(room_id, username)
+    membership.last_read_at = datetime.now(timezone.utc)
+    membership.save()
+    room_messages = list(Message.scan(Message.room_id==room_id))
+    for msg in room_messages:
+        try:
+            UserMessage.get(msg.message_id, username)
+        except UserMessage.DoesNotExist:
+            user_message = UserMessage(
+                message_id=msg.message_id,
+                username=username,
+                read_at=datetime.now(timezone.utc)
+            )
+            user_message.save()
+
+    return {"message": "Marked as read"}
+
+@router.get("/{room_id}/unread-count")
+async def get_unread_count(room_id: str, username: str = Depends(get_current_user)):
+    """Get count of unread messages for a user in a room"""
+    membership = RoomMembership.get(room_id, username)
+    last_read = membership.last_read_at
+
+    unread_messages = Message.scan(
+        (Message.room_id == room_id) & (Message.timestamp > last_read)
+    )
+    return {"count": len(list(unread_messages))}
+
+
 @router.get("/user/", response_model=list[RoomSchema])
 async def get_user_rooms(username: str = Depends(get_current_user)):
     print(f"Received rooms request: {username}")
@@ -112,20 +145,12 @@ async def get_user_rooms(username: str = Depends(get_current_user)):
     return rooms
 
 
-@router.get("/all-rooms/", response_model=list[RoomSchema])
-async def get_all_rooms():
-    try:
-        rooms = list(Room.scan())
-    except Room.DoesNotExist:
-        raise HTTPException(status_code=404, detail="No rooms found")
-    return rooms
+
 
 @router.get("/available-rooms/", response_model=list[RoomSchema])
 async def get_available_rooms(username: str = Depends(get_current_user)):
-
+    """Rooms in which user is not a member"""
     user = User.get(username)
-    if not user.rooms:  # if user has no rooms, return empty list
-        return []
     current_rooms = list(Room.batch_get(user.rooms))
     print(f"current_rooms :- {[room.room_name for room in current_rooms]}")
     print(f"user.rooms :- {user.rooms}")
@@ -135,23 +160,11 @@ async def get_available_rooms(username: str = Depends(get_current_user)):
     return available_rooms
 
 
-@router.get("/room_details/{room_id}/")
+@router.get("/room_details/{room_id}/", response_model=RoomSchema)
 async def get_room_details(room_id: str):
     try:
         room = Room.get(room_id)
-        # Scan all connections with matching room_id
-        active_connections = list(
-            Connection.scan(filter_condition=(Connection.room_id == room_id))
-        )
-        # active_users = sorted(set(conn.username for conn in active_connections))
-        room_members = room.users
-        print(f"Active connections: {room_members}")
-
-        return {
-            "room_name": room.room_name,
-            "room_members": room_members,
-            "description": room.description,
-        }
+        return room
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="Room not found")
     except Exception as e:
@@ -227,116 +240,21 @@ def user_request_join_room(room_id: str, username: str = Depends(get_current_use
     return {"message": f"Join request sent for room {room_id} by {username} to approve"}
 
 
-# Endpoint for admin to accept/reject a user
-@router.post("/admin/request/{room_id}/respond/", status_code=200)
-async def admin_respond_to_room_membership_request(
-    room_id: str,
-    user_action: UserActionDTO,
-    current_user: str = Depends(get_current_user),
-):
-    """Admin accepts or rejects a room joining request"""
-    try:
-        room = Room.get(room_id)
-        if current_user not in room.admins:
-            raise HTTPException(status_code=403, detail="Only admins can respond to requests")
-    except Room.DoesNotExist:
-        raise HTTPException(status_code=404, detail="Room not found")
-
-    action = user_action.action
-    user_invited = user_action.requested_user
-    try:
-        print("Received room membership request response:")
-        member_request = MembershipRequest.get(room_id, user_invited)
-    except MembershipRequest.DoesNotExist:
-        raise HTTPException(status_code=404, detail="Invite not found")
-
-    # Verify the responding user is an admin of the room
-
-    if action == "accept":
-        # Add user to room
-        if user_invited not in room.users:
-            room.users.append(user_invited)
-            room.save()
-        print(f"User {user_invited} added to room {room_id}")
-
-        # Update invite status
-        try:
-            user = User.get(user_invited)
-            user.rooms.append(room_id)
-            user.save()
-            print(f"**User {user_invited} added to room {room_id}")
-        except User.DoesNotExist:
-            raise HTTPException(status_code=404, detail="User not found")
-
-    # elif member_request.request_type == "join_request":
-    if user_invited in room.admins and user_invited not in room.users:
-        if action == "accept":
-            room.users.append(user_invited)
-            room.save()
-
-    member_request.status = "accepted" if action == "accept" else "rejected"
-    member_request.save()
-
-    return {
-        "message": f"{action} Performed successfully on {user_invited} for room {room_id}"
-    }
 
 
-@router.get("/admin/pending-invites/", response_model=List[MembershipRequestSchema])
-async def get_pending_invites(username: str = Depends(get_current_user)):
-    """Get all pending invites for rooms from other users to the admin"""
-    # Get all rooms where user is admin
-    pending_invitees = list(MembershipRequest.scan(
-        filter_condition=(MembershipRequest.status == "pending") & (MembershipRequest.request_type == "invite")
-    ))
-    room_ids = {req.room_id for req in pending_invitees}
-    print(f'room_ids: {room_ids}')
-    #  Rooms for which user is admin
-    rooms = {room.room_id: room for room in Room.batch_get(room_ids)}
-
-    print(f"len of user_invitees_rooms: {len(pending_invitees)}")
-    pending_invites = [req for req in pending_invitees
-                             if username in rooms.get(req.room_id, Room()).admins
-                             ]
-    print(f"pending_invites: {pending_invites}")
+@router.post("/member/create/", response_model=RoomMembershipDTO)
+async def create_room_membership(room_membership: RoomMembershipDTO):
+    room_member = RoomMembership(room_id=room_membership.room_id,
+                                 username=room_membership.username,
+                                 last_read_at=room_membership.last_read_at,
+                                 last_read_message_id=room_membership.last_read_message_id)
+    room_member.save()
+    return room_member
 
 
-    return pending_invites
 
 
-@router.get("/admin/pending-join-requests/", response_model=List[MembershipRequestSchema])
-async def get_pending_join_requests(username: str = Depends(get_current_user)):
-    """Get all pending invites for rooms from other users to the admin"""
-    # Get all rooms where user is admin
-    pending_invitees = list(MembershipRequest.scan(
-        filter_condition=(MembershipRequest.status == "pending") & (MembershipRequest.request_type == "join_request")
-    ))
-    room_ids = {req.room_id for req in pending_invitees}
-    print(f'room_ids: {room_ids}')
-    #  Rooms for which user is admin
-    rooms = {room.room_id: room for room in Room.batch_get(room_ids)}
-
-    print(f"len of user_invitees_rooms: {len(pending_invitees)}")
-    pending_join_requests = [req for req in pending_invitees
-                             if username in rooms.get(req.room_id, Room()).admins
-                             ]
 
 
-    return pending_join_requests
 
 
-@router.get("/all-requests/", response_model=list[MembershipRequestSchema])
-def get_all_invitees_and_join_requests():
-    try:
-        membership_requests = list(MembershipRequest.scan())
-    except MembershipRequest.DoesNotExist:
-        raise HTTPException(status_code=404, detail="No rooms found")
-    return membership_requests
-
-@router.get("/all-users/", response_model=list[UserSchema])
-def get_all_users():
-    try:
-        users = list(User.scan())
-    except User.DoesNotExist:
-        raise HTTPException(status_code=404, detail="No users found")
-    return users

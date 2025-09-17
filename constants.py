@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 
 import jwt
 import hashlib
@@ -19,7 +20,7 @@ def hash_password(password: str):
 
 
 def create_access_token(username: str, expires_delta: timedelta = None):
-    expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=45))
+    expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=145))
     to_encode = {"sub": username, "exp": expire}
     return jwt.encode(to_encode, JWT_SECRET, algorithm="HS256")
 

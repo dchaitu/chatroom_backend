@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 
 from constants import get_current_user, hash_password, create_access_token
 from models import User
-from schemas import UserCreate, UserLogin, UserSchema
+from schemas import UserCreate, UserLogin, UserSchema, UpdateUserDTO
 
 router = APIRouter(tags=['User'])
 
@@ -32,6 +32,7 @@ def register_user(user_info: UserCreate):
         fullname=user_info.fullname,
         email=user_info.email,
         rooms=[],
+        avatar=user_info.avatar
     )
     user.save()
 
@@ -67,12 +68,34 @@ def login(user_info: UserLogin):
 async def get_user_profile(username: str = Depends(get_current_user)):
     try:
         user = User.get(username)
-        user_data = {
-            "username": user.username,
-            "fullname": user.fullname,
-            "email": user.email,
-        }
-        print("user_data", user_data)
-        return UserSchema(**user_data)
+        return user
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+
+@router.put("/user/",response_model=UserSchema)
+async def update_user_profile(update_user: UpdateUserDTO, username: str = Depends(get_current_user)):
+    try:
+        user = User.get(username)
+        if update_user.avatar:
+            user.avatar = update_user.avatar
+        if update_user.email:
+            user.email = update_user.email
+        if update_user.fullname:
+            user.fullname = update_user.fullname
+
+        user.save()
+        print("user_data", user)
+        return user
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
+@router.get("/user-details/{username}", response_model=UserSchema)
+async def get_user_profile(username: str):
+    try:
+        user = User.get(username)
+
+        # print("user_data", user_data)
+        return user
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")

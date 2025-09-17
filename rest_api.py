@@ -1,8 +1,11 @@
+import shutil
 import uuid
+from typing import Optional
+
 from constants import hash_password, create_access_token, get_current_user
 
 print("Starting", flush=True)
-from fastapi import FastAPI, HTTPException, status, Depends
+from fastapi import FastAPI, HTTPException, status, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 import os
@@ -10,17 +13,20 @@ import boto3
 
 
 print("External Imports", flush=True)
-from models import User, Room, Message, Connection
-from schemas import MessageSchema, RoomSchema, UserSchema, \
-    SendMessage, RoomUpdate, MakeRoomAdmin
+from models import User, Room, Message, Connection, MembershipRequest, UserMessage
+from schemas import MessageSchema, SendMessage, UserSchema, RoomSchema, MembershipRequestSchema, MessageInfoDTO
 from room_routers import router as room_router
 from user_routers import router as user_router
+from admin_routes import router as admin_router
+from reply_routers import router as reply_router
+from reaction_routes import router as reaction_router
 print("Internal Imports", flush=True)
 dynamodb = boto3.client('dynamodb')
 
 print("List Dynamodb Tables", flush=True)
 app = FastAPI()
-
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 origins = [
     "http://localhost",
     "http://localhost:3000",
@@ -31,6 +37,9 @@ secret_key = os.environ.get('RECAPTCHA_SECRET_KEY')
 
 app.include_router(user_router)
 app.include_router(room_router)
+app.include_router(admin_router)
+app.include_router(reply_router)
+app.include_router(reaction_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,20 +49,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
-@app.post("/make_admin/", status_code=200, response_model=RoomSchema)
-async def create_room_admin(room_admin: MakeRoomAdmin):
+@app.get("/all-rooms/", response_model=list[RoomSchema])
+async def get_all_rooms():
     try:
-        room = Room.get(room_admin.room_id)
-        room.admins.append(room_admin.username)
-        room.save()
-
+        rooms = list(Room.scan())
     except Room.DoesNotExist:
-        raise HTTPException(status_code=404, detail="Room not found")
+        raise HTTPException(status_code=404, detail="No rooms found")
+    return rooms
 
-    return room
 
+@app.get("/all-users/", response_model=list[UserSchema])
+def get_all_users():
+    try:
+        users = list(User.scan())
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="No users found")
+    return users
+
+@app.get("/all-requests/", response_model=list[MembershipRequestSchema])
+def get_all_invitees_and_join_requests():
+    try:
+        membership_requests = list(MembershipRequest.scan())
+    except MembershipRequest.DoesNotExist:
+        raise HTTPException(status_code=404, detail="No rooms found")
+    return membership_requests
 
 
 
@@ -63,7 +82,7 @@ async def get_messages(room_id: str):
     messages = list(Message.scan(Message.room_id == room_id))
     for msg in messages:
         print(f"Message info: {msg.content}- {msg.timestamp}")
-    return [
+    messages_in_room = [
         MessageSchema(
             **{
                 "message_id": msg.message_id,
@@ -75,6 +94,8 @@ async def get_messages(room_id: str):
         )
         for msg in messages
     ]
+    messages_in_room = sorted(messages_in_room, key=lambda x:x.timestamp)
+    return messages_in_room
 
 
 @app.post("/send_message/", status_code=201)
@@ -99,18 +120,72 @@ async def send_message(message: SendMessage, username: str = Depends(get_current
     )
     message_item.save()
 
+    # Save UserMessage Info
+    user_message_item = UserMessage(
+        message_id=message_item.message_id,
+        username=user.username
+    )
+    user_message_item.save()
+
     return {
         "message": "Message sent successfully by {} in {}".format(
             username, room.room_name
         )
     }
 
+@app.get("/all-messages/", response_model=list[MessageSchema])
+def get_all_messages():
+    try:
+        messages = list(Message.scan())
+    except Message.DoesNotExist:
+        raise HTTPException(status_code=404, detail="No messages found")
+
+    return messages
 
 
+@app.get("/message-info", response_model=list[MessageInfoDTO])
+def get_message_info(message_id: str):
+    try:
+        message_info = list(UserMessage.query(message_id))
+        print("message_info ",message_info)
+        return message_info
+
+    except UserMessage.DoesNotExist:
+        raise HTTPException(status_code=404, detail="No messages found")
 
 
+@app.post('/upload')
+async def upload_file_with_message(file: UploadFile = File(...)):
+    content = await file.read()
+    print(content)
 
 
+async def create_message_with_file(
+    content: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    username: str = Depends(get_current_user)  # if you have auth
+):
+    file_url = None
+    if file:
+        file_ext = os.path.splitext(file.filename)[1]
+        saved_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = os.path.join(UPLOAD_DIR, saved_filename)
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        file_url = f"/{UPLOAD_DIR}/{saved_filename}"  # return path or S3 URL if uploading to cloud
+
+    # Save the message in DB (DynamoDB, PynamoDB, etc.)
+    message = {
+        "message_id": str(uuid.uuid4()),
+        "username": username,
+        "content": content,
+        "file_url": file_url,
+    }
+
+    print("Saved message:", message)
+    return message
 
 
 

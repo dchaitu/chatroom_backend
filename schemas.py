@@ -1,7 +1,9 @@
+import re
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
 
 
 class UserCreate(BaseModel):
@@ -9,17 +11,19 @@ class UserCreate(BaseModel):
     password: str
     fullname: str
     email: str
+    avatar: str
     recaptcha_token: str
 
-class RoomCreate(BaseModel):
-    room_id: str
-    room_name: str
-    description: str
-
-class RoomUpdate(BaseModel):
+class RoomDTO(BaseModel):
     room_id: str
     room_name: Optional[str] = None
     description: Optional[str] = None
+
+class RoomCreate(RoomDTO):
+    pass
+
+class RoomUpdate(BaseModel):
+    pass
 
 class MakeRoomAdmin(BaseModel):
     room_id: str
@@ -30,11 +34,17 @@ class UserLogin(BaseModel):
     password: str
     recaptcha_token: str
 
+    model_config = {
+        "json_schema_extra" : {
+        "example": {
+            "username": "chaitu",
+            "password": "chaitu",
+            "recaptcha_token": "string",
+        }
+    }
+    }
 
-class RoomSchema(BaseModel):
-    room_id: str
-    room_name: str
-    description: str
+class RoomSchema(RoomDTO):
     users: List[str]
     admins: List[str]
 
@@ -45,9 +55,15 @@ class UserSchema(BaseModel):
     username: str
     fullname: str
     email: str
+    avatar: str
 
     class Config:
         from_attributes = True
+
+class UpdateUserDTO(BaseModel):
+    avatar: Optional[str]
+    fullname: Optional[str] = None
+    email: Optional[str] = None
 
 class UserRoomSchema(BaseModel):
     username: str
@@ -56,6 +72,7 @@ class UserRoomSchema(BaseModel):
 
 
 class MessageSchema(BaseModel):
+    message_id: str
     content: str
     username: str
     room_id: str
@@ -89,3 +106,52 @@ class UserActionDTO(BaseModel):
 class AddUserToRoomDTO(BaseModel):
     room_id: str
     added_user: str
+
+class RoomMembershipDTO(BaseModel):
+    room_id: str
+    username: str
+    last_read_at: Optional[datetime]
+    last_read_message_id: Optional[str]
+
+
+class MessageInfoDTO(BaseModel):
+    message_id: str
+    username: str
+    read_at: Optional[datetime]
+
+class ReplyMessageDTO(BaseModel):
+    message_id: str
+    content: str
+
+
+class ReplyThreadDTO(ReplyMessageDTO):
+    thread_id: str
+    reply_id: str
+    username: str
+    timestamp: Optional[datetime]
+
+emoji_pattern = re.compile(
+    "[" 
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "]+",
+    flags=re.UNICODE
+)
+
+class ReactionDTO(BaseModel):
+    message_id: str
+    reaction_type: str
+
+    # @field_validator("reaction_type")
+    # def must_be_emoji(cls, v):
+    #     if not emoji_pattern.match(v):
+    #         raise ValueError("reaction_type must be an emoji")
+    #     return v
+
+class UserReactionDTO(ReactionDTO):
+    username: str
+    reacted_at: Optional[datetime]
+
+
