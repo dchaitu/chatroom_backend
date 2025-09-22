@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, status, Depends
 
@@ -10,7 +10,7 @@ from schemas import ReactionDTO, UserReactionDTO
 router = APIRouter(prefix="/reaction", tags=['Reaction'])
 
 
-@router.post("/create/", status_code=status.HTTP_201_CREATED, response_model=UserReactionDTO)
+@router.post("/create/", status_code=status.HTTP_201_CREATED, response_model=Optional[UserReactionDTO])
 def create_reaction_to_message(reaction: ReactionDTO, username: str = Depends(get_current_user)):
     try:
         user_reaction = UserReaction.get(reaction.message_id, username)

@@ -1,7 +1,9 @@
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, HTTPException, Depends, status
+from pygments.lexer import default
 
 from constants import get_current_user
 from models import User, Room, Connection, MembershipRequest, RoomMembership, Message, UserMessage
@@ -110,16 +112,27 @@ async def mark_as_read(room_id: str, username: str = Depends(get_current_user)):
 
     return {"message": "Marked as read"}
 
-@router.get("/{room_id}/unread-count")
-async def get_unread_count(room_id: str, username: str = Depends(get_current_user)):
-    """Get count of unread messages for a user in a room"""
-    membership = RoomMembership.get(room_id, username)
-    last_read = membership.last_read_at
+@router.post("/unread-count")
+async def get_unread_counts(room_ids: List[str], username: str = Depends(get_current_user)):
+    """Get count of unread messages for a user in each room"""
+    memberships = list(RoomMembership.scan(RoomMembership.username == username))
 
-    unread_messages = Message.scan(
-        (Message.room_id == room_id) & (Message.timestamp > last_read)
-    )
-    return {"count": len(list(unread_messages))}
+    # Step 2: Filter memberships to only requested room_ids
+    memberships = [m for m in memberships if m.room_id in room_ids]
+    unread_counts = []
+
+    for membership in memberships:
+        last_read_at = membership.last_read_at
+
+        unread_messages = list(Message.scan(
+            (Message.room_id == membership.room_id) & (Message.timestamp > last_read_at)
+        ))
+
+        # unread_counts[membership.room_id] = len(unread_messages)
+        unread_counts.append({"room_id":membership.room_id, "count":len(unread_messages)})
+
+
+    return unread_counts
 
 
 @router.get("/user/", response_model=list[RoomSchema])

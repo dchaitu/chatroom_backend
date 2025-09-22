@@ -13,6 +13,7 @@ class UserCreate(BaseModel):
     email: str
     avatar: str
     recaptcha_token: str
+    pic_url: str
 
 class RoomDTO(BaseModel):
     room_id: str
@@ -56,14 +57,16 @@ class UserSchema(BaseModel):
     fullname: str
     email: str
     avatar: str
+    pic_url: Optional[str]
 
     class Config:
         from_attributes = True
 
 class UpdateUserDTO(BaseModel):
-    avatar: Optional[str]
+    avatar: Optional[str] = None
     fullname: Optional[str] = None
     email: Optional[str] = None
+    pic_url: Optional[str] = None
 
 class UserRoomSchema(BaseModel):
     username: str
@@ -77,6 +80,7 @@ class MessageSchema(BaseModel):
     username: str
     room_id: str
     timestamp: Optional[datetime]
+    file_url: Optional[str] = None
 
 
     class Config:
@@ -86,6 +90,7 @@ class MessageCreate(BaseModel):
     content: str
     username: str
     room_id: str
+    file_url: Optional[str] = None
 
 class SendMessage(BaseModel):
     content: str

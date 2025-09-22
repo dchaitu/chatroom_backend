@@ -21,6 +21,7 @@ class User(Model):
     email = UnicodeAttribute()
     rooms = ListAttribute(default=list)  # List of room IDs
     avatar = UnicodeAttribute(default='😁')
+    pic_url = UnicodeAttribute(null=True)
 
 class Room(Model):
     class Meta:
@@ -43,8 +44,11 @@ class Message(Model):
     timestamp = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     username = UnicodeAttribute()  # user who sent it
     room_id = UnicodeAttribute()
+    file_url = UnicodeAttribute(null=True)
 
     def __str__(self):
+        if self.file_url:
+            return f"{self.username} sent a file to {self.room_id}"
         return str(self.username) + " sent " + str(self.content) + " to " + str(self.room_id)
 
 

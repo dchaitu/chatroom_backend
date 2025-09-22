@@ -1,4 +1,5 @@
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import List
 
@@ -38,6 +39,14 @@ async def create_reply_to_message(reply_message: ReplyMessageDTO, username: str 
 async def get_message_reply_count(message_id: str):
     replies_for_message = list(ReplyThread.scan(filter_condition=(ReplyThread.message_id==message_id)))
     return {message_id: len(replies_for_message)}
+
+@router.get('/counts/')
+async def get_all_message_reply_count():
+    replies_for_message = list(ReplyThread.scan())
+    message_wise_replies_count = defaultdict(int)
+    for reply in replies_for_message:
+        message_wise_replies_count[reply.message_id] +=1
+    return message_wise_replies_count
 
 
 

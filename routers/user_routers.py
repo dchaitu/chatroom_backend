@@ -32,7 +32,8 @@ def register_user(user_info: UserCreate):
         fullname=user_info.fullname,
         email=user_info.email,
         rooms=[],
-        avatar=user_info.avatar
+        avatar=user_info.avatar,
+        pic_url=user_info.pic_url
     )
     user.save()
 
@@ -68,6 +69,7 @@ def login(user_info: UserLogin):
 async def get_user_profile(username: str = Depends(get_current_user)):
     try:
         user = User.get(username)
+        print("get user_data", user)
         return user
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")
@@ -82,9 +84,13 @@ async def update_user_profile(update_user: UpdateUserDTO, username: str = Depend
             user.email = update_user.email
         if update_user.fullname:
             user.fullname = update_user.fullname
+        if update_user.pic_url:
+
+            user.pic_url = update_user.pic_url
 
         user.save()
         print("user_data", user)
+        print("user_pic_url ", user.pic_url)
         return user
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")

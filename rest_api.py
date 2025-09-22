@@ -2,10 +2,12 @@ import shutil
 import uuid
 from typing import Optional
 
-from constants import hash_password, create_access_token, get_current_user
+from starlette.staticfiles import StaticFiles
+
+from constants import get_current_user
 
 print("Starting", flush=True)
-from fastapi import FastAPI, HTTPException, status, Depends, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 import os
@@ -13,13 +15,13 @@ import boto3
 
 
 print("External Imports", flush=True)
-from models import User, Room, Message, Connection, MembershipRequest, UserMessage
-from schemas import MessageSchema, SendMessage, UserSchema, RoomSchema, MembershipRequestSchema, MessageInfoDTO
-from room_routers import router as room_router
-from user_routers import router as user_router
-from admin_routes import router as admin_router
-from reply_routers import router as reply_router
-from reaction_routes import router as reaction_router
+from models import User, Room, Message, MembershipRequest, UserMessage
+from schemas import MessageSchema, UserSchema, RoomSchema, MembershipRequestSchema, MessageInfoDTO
+from routers.room_routers import router as room_router
+from routers.user_routers import router as user_router
+from routers.admin_routers import router as admin_router
+from routers.reply_routers import router as reply_router
+from routers.reaction_routers import router as reaction_router
 print("Internal Imports", flush=True)
 dynamodb = boto3.client('dynamodb')
 
@@ -40,6 +42,9 @@ app.include_router(room_router)
 app.include_router(admin_router)
 app.include_router(reply_router)
 app.include_router(reaction_router)
+
+# Consider this as static files storing uploaded files
+app.mount("/uploads",StaticFiles(directory="uploads"),name="uploads")
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,6 +95,7 @@ async def get_messages(room_id: str):
                 "username": msg.username,
                 "room_id": msg.room_id,
                 "timestamp": msg.timestamp,
+                "file_url":msg.file_url
             }
         )
         for msg in messages
@@ -98,28 +104,42 @@ async def get_messages(room_id: str):
     return messages_in_room
 
 
-@app.post("/send_message/", status_code=201)
-async def send_message(message: SendMessage, username: str = Depends(get_current_user)):
-    print(f"Received send_message request: {message}")
+@app.post("/send_message/", status_code=201, response_model=MessageSchema)
+async def send_message(content: Optional[str] = Form(None),
+                       room_id: str = Form(...),
+                       file: Optional[UploadFile] = File(None),
+                       username: str = Depends(get_current_user)):
     try:
         user = User.get(username)
     except User.DoesNotExist:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        room = Room.get(message.room_id)
+        room = Room.get(room_id)
     except Room.DoesNotExist:
         raise HTTPException(status_code=404, detail="Room not found")
+
+    file_url = None
+    if file:
+        print("**********File Uploaded**********")
+        ext = os.path.splitext(file.filename)[1]
+        fname = f"{file.filename}{ext}"
+        file_path = os.path.join(UPLOAD_DIR, fname)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        file_url = f"/{UPLOAD_DIR}/{fname}"
 
     # Save message
     message_item = Message(
         message_id=str(uuid.uuid4()),
-        content=message.content,
+        content=content,
         username=user.username,
-        room_id=message.room_id
+        room_id=room_id,
+        file_url=file_url
     )
     message_item.save()
-
+    print("file_url ",file_url)
     # Save UserMessage Info
     user_message_item = UserMessage(
         message_id=message_item.message_id,
@@ -127,16 +147,13 @@ async def send_message(message: SendMessage, username: str = Depends(get_current
     )
     user_message_item.save()
 
-    return {
-        "message": "Message sent successfully by {} in {}".format(
-            username, room.room_name
-        )
-    }
+    return message_item
 
 @app.get("/all-messages/", response_model=list[MessageSchema])
 def get_all_messages():
     try:
         messages = list(Message.scan())
+        messages = sorted(messages, key=lambda x: x.timestamp)
     except Message.DoesNotExist:
         raise HTTPException(status_code=404, detail="No messages found")
 
@@ -144,11 +161,23 @@ def get_all_messages():
 
 
 @app.get("/message-info", response_model=list[MessageInfoDTO])
-def get_message_info(message_id: str):
+def get_message_last_seen_info(room_id: str):
     try:
-        message_info = list(UserMessage.query(message_id))
-        print("message_info ",message_info)
-        return message_info
+        message_info_list = []
+        room_messages = list(Message.scan(Message.room_id==room_id))
+        for msg in room_messages:
+            message_info = list(UserMessage.query(msg.message_id))
+            print("message_info ", message_info)
+            # return message_info
+            # message_info = MessageInfoDTO(
+            #     message_id=msg.message_id,
+            #     username=msg.username,
+            #     read_at=msg.read_at if hasattr(msg, "read_at") else msg.timestamp
+            # )
+            message_info_list.extend(message_info)
+
+        print("message_info_list ",message_info_list)
+        return message_info_list
 
     except UserMessage.DoesNotExist:
         raise HTTPException(status_code=404, detail="No messages found")
@@ -168,6 +197,7 @@ async def create_message_with_file(
     file_url = None
     if file:
         file_ext = os.path.splitext(file.filename)[1]
+        print("File Details ",os.path.splitext(file.filename))
         saved_filename = f"{uuid.uuid4()}{file_ext}"
         file_path = os.path.join(UPLOAD_DIR, saved_filename)
 
