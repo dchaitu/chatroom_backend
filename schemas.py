@@ -2,8 +2,7 @@ import re
 from datetime import datetime
 from typing import Optional, List
 
-from pydantic import BaseModel, field_validator
-
+from pydantic import BaseModel, field_validator, ConfigDict
 
 
 class UserCreate(BaseModel):
@@ -46,11 +45,13 @@ class UserLogin(BaseModel):
     }
 
 class RoomSchema(RoomDTO):
+    model_config = ConfigDict(from_attributes=True)
     users: List[str]
     admins: List[str]
 
     class Config:
         from_attributes = True
+        orm_mode = True
 
 class UserSchema(BaseModel):
     username: str
