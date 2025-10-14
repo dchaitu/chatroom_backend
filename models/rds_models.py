@@ -173,7 +173,7 @@ class UserReaction(Base):
 #     room = relationship("Room", back_populates="connections")
 
 # Create all tables
-def create_tables():
+def create_tables() -> None:
     Base.metadata.create_all(engine)
 
 if __name__ == "__main__":

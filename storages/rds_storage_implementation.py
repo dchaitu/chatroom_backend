@@ -3,22 +3,23 @@ import shutil
 import uuid
 from collections import defaultdict
 from datetime import timezone, datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from fastapi import HTTPException, status, Form, UploadFile, File, Depends
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from constants import hash_password, create_access_token, UPLOAD_DIR
 from interactors.storage_interfaces.storage_interface import StorageInterface
-from models.rds_models import User, engine, RoomMembership, Room, MembershipRequest, UserReaction, ReplyThread, Message, UserMessage
+from models.rds_models import User, engine, RoomMembership, Room, MembershipRequest, UserReaction, ReplyThread, Message, \
+    UserMessage
 from schemas import MakeRoomAdmin, RoomCreate, RoomUpdate, RoomSchema, AddUserToRoomDTO, RoomMembershipDTO, UserCreate, \
     UserLogin, UserSchema, UpdateUserDTO, MessageSchema, MembershipRequestSchema, UserActionDTO, ReactionDTO, \
-    ReplyMessageDTO
+    ReplyMessageDTO, ReplyThreadDTO, UserReactionDTO, RoomDTO, MessageInfoDTO
 
 
 class RDSStorageImplementation(StorageInterface):
-    async def create_room_admin(self, room_admin: MakeRoomAdmin):
+    async def create_room_admin(self, room_admin: MakeRoomAdmin) -> Dict[str, str]:
         room = select(Room).where(Room.room_id == room_admin.room_id)
 
         with Session(engine) as session:
@@ -32,97 +33,155 @@ class RDSStorageImplementation(StorageInterface):
                     session.commit()
         return {"message": f"User {room_admin.username} is now an admin of room {room.room_id}"}
 
-
-
-    async def get_pending_requests(self, request_type: str, username: str):
-        statement = select(MembershipRequest).where(
-            (MembershipRequest.request_type == request_type) & (MembershipRequest.status == "pending")
-            & (MembershipRequest.username == username)
-        )
+    async def get_pending_requests(self, request_type: str, username: str) -> List[MembershipRequestSchema]:
         with Session(engine) as session:
+            admin_rooms = session.execute(
+                select(Room.room_id).where((RoomMembership.username == username) & (RoomMembership.is_admin))
+            ).scalars().all()
+
+            if not admin_rooms:
+                return []
+
+            statement = select(MembershipRequest).where(
+                (MembershipRequest.room_id.in_(admin_rooms)) &
+                (MembershipRequest.request_type == request_type) &
+                (MembershipRequest.status == "pending")
+            )
+
             pending_requests = session.execute(statement).scalars().all()
-            # room_ids = [req.room_id for req in pending_requests]
-        return pending_requests
+            pending_requests_dtos = [MembershipRequestSchema.model_validate(request) for request in pending_requests]
+            return pending_requests_dtos
 
     async def admin_respond_to_room_membership_request(
             self,
             room_id: str,
             user_action: UserActionDTO,
             current_user: str
-    ):
+    ) -> Dict[str, str]:
         with Session(engine) as session:
-            try:
-                action = user_action.action
-                user_invited = user_action.requested_user
-                membership_request = select(MembershipRequest).where(
-                    (MembershipRequest.room_id == room_id) & (MembershipRequest.username == user_invited)
-                )
-            except Exception:
-                raise HTTPException(status_code=404, detail="Membership request not found")
+            action = user_action.action
+            user_invited = user_action.requested_user
 
-            membership_request = session.execute(membership_request).scalar_one_or_none()
+            membership_request = session.scalar(
+                select(MembershipRequest).where(
+                    (MembershipRequest.room_id == room_id)
+                    & (
+                            (MembershipRequest.username == user_invited)
+                            | (MembershipRequest.created_by == user_invited)
+                    )
+                    & (MembershipRequest.status == "pending")
+                )
+            )
+
             if membership_request is None:
-                raise HTTPException(status_code=404, detail="Membership request not found")
+                raise HTTPException(status_code=404, detail=f"Membership request with room_id={room_id} not found")
+
+            room = session.scalar(select(Room).where(Room.room_id == room_id))
+            user = session.scalar(select(User).where(User.username == user_invited))
+
+            if membership_request.request_type == "invite":
+                if current_user != membership_request.username:
+                    raise HTTPException(status_code=403, detail="Only the invited user can respond to an invite")
+
+            elif membership_request.request_type == "join_request":
+                is_user_admin = session.scalar(
+                    select(RoomMembership.is_admin).where(
+                        (RoomMembership.room_id == room_id)
+                        & (RoomMembership.username == current_user)
+                    )
+                )
+                if is_user_admin is None:
+                    raise HTTPException(status_code=403, detail="Only an admin can respond to a join request")
+
+            else:
+                raise HTTPException(status_code=400, detail="Invalid request type")
 
             if action == "accept":
                 membership_request.status = "accepted"
+
+                if user not in room.users:
+                    room.users.append(user)
+
+                if room not in user.rooms:
+                    user.rooms.append(room)
+
+                session.add(RoomMembership(room_id=room.room_id, username=user.username))
+
             elif action == "reject":
                 membership_request.status = "rejected"
+            else:
+                raise HTTPException(status_code=400, detail="Invalid action")
+
+            if action == "accept":
+                session.add(RoomMembership(room_id=room_id, username=user_invited))
+            session.add(membership_request)
             session.commit()
         return {"message": f"Membership request {action} for user {user_invited} in room {room_id}"}
 
 
-    async def create_reaction_to_message(self, reaction: ReactionDTO, username: str):
+    async def create_reaction_to_message(self, reaction: ReactionDTO, username: str) -> UserReaction:
         with Session(engine) as session:
-            try:
-                user_reaction = select(UserReaction).where(
+            user_reaction = session.execute(
+                select(UserReaction).where(
                     (UserReaction.message_id == reaction.message_id) & (UserReaction.username == username)
                 )
-                user_reaction = session.execute(user_reaction).scalar_one_or_none()
+            ).scalar_one_or_none()
+
+            if user_reaction:
                 if user_reaction.reaction_type == reaction.reaction_type:
                     session.delete(user_reaction)
+                    session.commit()
+                    return user_reaction
                 else:
                     user_reaction.reaction_type = reaction.reaction_type
                     user_reaction.reacted_at = datetime.now(timezone.utc)
-                    session.add(user_reaction)
-                session.commit()
-            except Exception:
-                raise HTTPException(status_code=404, detail="User reaction not found")
+            else:
+                user_reaction = UserReaction(
+                    message_id=reaction.message_id,
+                    username=username,
+                    reaction_type=reaction.reaction_type,
+                    reacted_at=datetime.now(timezone.utc)
+                )
+                session.add(user_reaction)
 
-        return user_reaction
+            session.commit()
+            session.refresh(user_reaction)
+            return user_reaction
 
-    #
+    async def get_reactions_to_messages_in_room(self, room_id: str) -> List[UserReactionDTO]:
+        with Session(engine) as session:
+            statement = select(UserReaction).join(Message).where(Message.room_id == room_id)
+            reactions = session.execute(statement).scalars().all()
+            return [UserReactionDTO.model_validate(reaction) for reaction in reactions]
 
 
-
-    async def get_all_reactions(self):
+    async def get_all_reactions(self) -> List[UserReaction]:
         statement = select(UserReaction)
         reactions = []
         with Session(engine) as session:
             reactions = session.execute(statement).scalars().all()
         return reactions
 
-    async def create_reply_to_message(self, reply_message: ReplyMessageDTO, username: str):
+    async def create_reply_to_message(self, reply_message: ReplyMessageDTO, username: str) -> ReplyThreadDTO:
         with Session(engine) as session:
             reply_thread = ReplyThread(
                 message_id=reply_message.message_id,
-                reply_message=reply_message.reply_message,
+                content=reply_message.content,
                 username=username,
                 timestamp=datetime.now(timezone.utc)
             )
             session.add(reply_thread)
             session.commit()
-            reply_thread_dto = ReplyMessageDTO.model_validate(reply_thread)
+            reply_thread_dto = ReplyThreadDTO.model_validate(reply_thread)
         return reply_thread_dto
 
-
-    async def get_message_reply_count(self, message_id: str):
+    async def get_message_reply_count(self, message_id: str) -> Dict[str, int]:
         statement = select(ReplyThread).where(ReplyThread.message_id == message_id)
         with Session(engine) as session:
             replies_for_message = session.execute(statement).scalars().all()
         return {message_id: len(replies_for_message)}
 
-    async def get_all_message_reply_count(self):
+    async def get_all_message_reply_count(self) -> Dict[str, int]:
         statement = select(ReplyThread)
         message_wise_replies_count = defaultdict(int)
         with Session(engine) as session:
@@ -132,128 +191,203 @@ class RDSStorageImplementation(StorageInterface):
 
         return message_wise_replies_count
 
-    async def show_replies_for_messages(self, message_id: str):
+    async def show_replies_for_messages(self, message_id: str) -> List[ReplyThreadDTO]:
         statement = select(ReplyThread).where(ReplyThread.message_id == message_id)
         with Session(engine) as session:
             replies_for_message = session.execute(statement).scalars().all()
             replies_for_message.sort(key=lambda r: r.timestamp)
 
-        return replies_for_message
+        return [ReplyThreadDTO.model_validate(reply) for reply in replies_for_message]
 
-
-    async def show_all_replies(self):
+    async def show_all_replies(self) -> List[ReplyThreadDTO]:
         statement = select(ReplyThread)
         with Session(engine) as session:
             replies = session.execute(statement).scalars().all()
             # replies.sort(key=lambda r: r.timestamp)
-        return replies
+        return [ReplyThreadDTO.model_validate(reply) for reply in replies]
 
-    async def create_room(self, room: RoomCreate, username: str):
+    async def create_room(self, room: RoomCreate, username: str) -> Dict[str, str]:
         with Session(engine) as session:
-            try:
-                user = session.get(User, username)
-                check_room = session.get(Room, room.room_id)
-            except Exception:
-                raise HTTPException(status_code=404, detail="User/Room not found")
+            user = session.get(User, username)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
 
-            room = Room(
+            check_room = session.get(Room, room.room_id)
+            if check_room:
+                raise HTTPException(status_code=400, detail="Room already exists")
+
+            room_obj = Room(
                 room_id=room.room_id,
                 room_name=room.room_name.strip(' '),
                 description=room.description,
                 users=[user],
             )
-            session.add(room)
+            session.add(room_obj)
             session.commit()
 
         return {"message": f"Room created successfully: {room.room_id} by {username}"}
 
-
-    async def update_room(self, room: RoomUpdate, username: str):
+    async def update_room(self, room: RoomUpdate, username: str) -> Dict[str, str]:
         with Session(engine) as session:
             existing_room = session.get(Room, room.room_id)
             if existing_room is None:
                 raise HTTPException(status_code=404, detail="Room not found")
-            if existing_room.room_name:
+            if room.room_name:
                 existing_room.room_name = room.room_name
-            if existing_room.description:
+            if room.description:
                 existing_room.description = room.description
-            # existing_room.save()
             session.commit()
         return {"message": f"Updated Room fields successfully: {room.room_name}"}
 
-
-    async def user_leave_room(self, room_id: str, username: str):
+    async def user_leave_room(self, room_id: str, username: str) -> None:
         with Session(engine) as session:
             user = session.get(User, username)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
             room = session.get(Room, room_id)
-            if room_id in user.rooms:
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+
+            if room in user.rooms:
                 user.rooms.remove(room)
                 session.commit()
 
-
-    async def mark_as_read(self, room_id: str, username: str):
+    async def mark_as_read(self, room_id: str, username: str) -> Dict[str, str]:
+        """Update last_read_at when user opens a room"""
         with Session(engine) as session:
-            statement = select(RoomMembership).where((RoomMembership.room_id == room_id) & (RoomMembership.username== username))
+            statement = select(RoomMembership).where(
+                (RoomMembership.room_id == room_id) & (RoomMembership.username == username))
             membership = session.execute(statement).scalar_one_or_none()
+            print(f"membership is {membership}")
+            if not membership:
+                raise HTTPException(status_code=404, detail="Membership not found")
+
             membership.last_read_at = datetime.now(timezone.utc)
             session.commit()
+
             room_messages = session.execute(select(Message).where(Message.room_id == room_id)).scalars().all()
             for msg in room_messages:
-                try:
-                    user_message = session.get(UserMessage, (msg.message_id, username))
-                except Exception:
+                user_message_statement = select(UserMessage).where(
+                    (UserMessage.message_id == msg.message_id) &
+                    (UserMessage.username == username)
+                )
+                user_message = session.execute(user_message_statement).scalar_one_or_none()
+
+                if not user_message:
                     user_message = UserMessage(
                         message_id=msg.message_id,
                         username=username,
                         read_at=datetime.now(timezone.utc)
                     )
                     session.add(user_message)
-                    session.commit()
+            session.commit()
 
             return {"message": "Marked as read"}
 
-
-    async def get_unread_counts(self, room_ids: List[str], username: str):
-        # pass
-        membership = select(RoomMembership).where((RoomMembership.username== username))
-
-        filter_membership = select(membership).where(membership.room_id.in_(room_ids))
+    async def get_unread_counts(self, room_ids: List[str], username: str) -> List[Dict[str, Any]]:
         with Session(engine) as session:
-            filter_memberships = session.execute(filter_membership).scalars().all()
+            statement = select(RoomMembership).where(
+                (RoomMembership.username == username) &
+                (RoomMembership.room_id.in_(room_ids))
+            )
+            memberships = session.execute(statement).scalars().all()
             unread_counts = []
-            for membership in filter_memberships:
-                unread_counts.append({"room_id": membership.room_id, "count": len(membership.unread_messages)})
-
+            for membership in memberships:
+                last_read_at = membership.last_read_at
+                if last_read_at:
+                    count_statement = select(func.count(Message.message_id)).where(
+                        (Message.room_id == membership.room_id) &
+                        (Message.timestamp > last_read_at)
+                    )
+                    count = session.execute(count_statement).scalar_one()
+                else:
+                    count_statement = select(func.count(Message.message_id)).where(
+                        Message.room_id == membership.room_id
+                    )
+                    count = session.execute(count_statement).scalar_one()
+                unread_counts.append({"room_id": membership.room_id, "count": count})
         return unread_counts
 
     async def get_user_rooms(self, username: str) -> List[RoomSchema]:
-        statement = select(User).where(User.username == username)
         with Session(engine) as session:
-            user = session.execute(statement).scalar_one_or_none()
+            user = session.get(User, username)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
             rooms = user.rooms
-            room_dtos = [RoomSchema.model_validate(room) for room in rooms]
+            room_dtos = []
+            for room in rooms:
+                room_dtos.append(
+                    RoomSchema(
+                        room_id=room.room_id,
+                        room_name=room.room_name,
+                        description=room.description,
+                        users=[user.username for user in room.users],
+                    )
+                )
         return room_dtos
 
-    async def get_available_rooms(self, username: str):
+    async def get_available_rooms(self, username: str) -> List[RoomSchema]:
         with Session(engine) as session:
-            user_rooms = session.get(User, username).rooms
+            user = session.get(User, username)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            user_rooms = user.rooms
             all_rooms = session.execute(select(Room)).scalars().all()
-            available_rooms = [room for room in all_rooms if room.room_id not in user_rooms]
-            room_dtos = [RoomSchema.model_validate(room) for room in available_rooms]
+            available_rooms = [room for room in all_rooms if room not in user_rooms]
+            room_dtos = []
+            for room in available_rooms:
+                room_dtos.append(
+                    RoomSchema(
+                        room_id=room.room_id,
+                        room_name=room.room_name,
+                        description=room.description,
+                        users=[user.username for user in room.users],
+                    )
+                )
         return room_dtos
 
-    async def get_room_details(self, room_id: str):
+    async def get_room_details(self, room_id: str) -> RoomSchema:
         with Session(engine) as session:
             room = session.get(Room, room_id)
-            room_dto = RoomSchema.model_validate(room)
-
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_dto = RoomSchema(
+                room_id=room.room_id,
+                room_name=room.room_name,
+                description=room.description,
+                users=[user.username for user in room.users],
+            )
         return room_dto
 
-    async def admin_add_user_to_room(self,
-                                     add_user_to_room: AddUserToRoomDTO, current_user: str
-                                     ):
+    async def get_room_admins(self, room_id:str):
+        with Session(engine) as session:
+            admins = select(RoomMembership).where(
+                (RoomMembership.room_id == room_id) & (RoomMembership.is_admin == True)
+            )
+            admins_result = session.execute(admins).scalars().all()
+            if not admins_result:
+                raise HTTPException(status_code=404, detail="Admin not found")
+            admins = [user.username for user in admins_result]
+        return admins
+
+    async def admin_add_user_to_room(
+            self,
+            add_user_to_room: AddUserToRoomDTO, current_user: str
+            ) -> Dict[str, str]:
         with Session(engine) as session:
             current_room_id = add_user_to_room.room_id
+            existing_request = session.execute(
+                select(MembershipRequest).where(
+                    (MembershipRequest.room_id == current_room_id) &
+                    (MembershipRequest.username == add_user_to_room.added_user) &
+                    (MembershipRequest.status == "pending") &
+                    (MembershipRequest.request_type == "invite")
+                )
+            ).scalar_one_or_none()
+
+            if existing_request:
+                raise HTTPException(status_code=400, detail="Invite already sent to this user.")
+
             room = session.get(Room, current_room_id)
             room_membership = select(RoomMembership).where(
                 (RoomMembership.room_id == current_room_id) &
@@ -265,12 +399,13 @@ class RDSStorageImplementation(StorageInterface):
                 raise HTTPException(status_code=403, detail="Only admins can invite users to this room.")
 
             invited_user = session.get(User, add_user_to_room.added_user)
-            if invited_user not in room.users:
+            if invited_user in room.users:
                 raise HTTPException(status_code=400, detail="User already in room.")
+            invited_username = invited_user.username
 
             membership_request = MembershipRequest(
                 room_id=current_room_id,
-                username=invited_user,
+                username=invited_username,
                 status="pending",
                 request_type="invite",
                 created_by=current_user,
@@ -278,9 +413,9 @@ class RDSStorageImplementation(StorageInterface):
             session.add(membership_request)
             session.commit()
 
-        return {"message": f"Invite sent to {invited_user} for room {current_room_id}"}
+        return {"message": f"Invite sent to {invited_username} for room {current_room_id}"}
 
-    async def user_request_join_room(self, room_id: str, username: str):
+    async def user_request_join_room(self, room_id: str, username: str) -> Dict[str, str]:
         with Session(engine) as session:
             membership_request = select(MembershipRequest).where(
                 (MembershipRequest.room_id == room_id) &
@@ -290,7 +425,6 @@ class RDSStorageImplementation(StorageInterface):
             membership_request_result = session.execute(membership_request).scalar_one_or_none()
             if membership_request_result is not None:
                 raise HTTPException(status_code=400, detail="Already requested to join the room.")
-
 
             membership_request = MembershipRequest(
                 room_id=room_id,
@@ -304,7 +438,7 @@ class RDSStorageImplementation(StorageInterface):
 
         return {"message": f"Join request sent for room {room_id} by {username} to approve"}
 
-    async def create_room_membership(self, room_membership: RoomMembershipDTO):
+    async def create_room_membership(self, room_membership: RoomMembershipDTO) -> RoomMembershipDTO:
 
         with Session(engine) as session:
             room_membership_obj = RoomMembership(
@@ -319,7 +453,7 @@ class RDSStorageImplementation(StorageInterface):
 
         return room_membership_dto
 
-    async def register_user(self, user_info: UserCreate):
+    async def register_user(self, user_info: UserCreate) -> Dict[str, Any]:
         with Session(engine) as session:
             existing_user = session.get(User, user_info.username)
             if existing_user is not None:
@@ -342,7 +476,7 @@ class RDSStorageImplementation(StorageInterface):
             "status_code": status.HTTP_201_CREATED,
         }
 
-    async def login(self, user_info: UserLogin):
+    async def login(self, user_info: UserLogin) -> Dict[str, Any]:
         with Session(engine) as session:
             user = session.get(User, user_info.username)
             if user is None:
@@ -361,8 +495,7 @@ class RDSStorageImplementation(StorageInterface):
             "refresh_token": refresh_token,
         }
 
-
-    async def get_user_profile(self, username: str):
+    async def get_user_profile(self, username: str) -> UserSchema:
         with Session(engine) as session:
             user = session.get(User, username)
             if user is None:
@@ -370,56 +503,51 @@ class RDSStorageImplementation(StorageInterface):
             user_dto = UserSchema.model_validate(user)
             return user_dto
 
-    async def update_user_profile(self, update_user: UpdateUserDTO, username: str):
+    async def update_user_profile(self, update_user: UpdateUserDTO, username: str) -> User:
         with Session(engine) as session:
-            try:
-                user = session.get(User, username)
-
-                if update_user.avatar:
-                    user.avatar = update_user.avatar
-                if update_user.email:
-                    user.email = update_user.email
-                if update_user.fullname:
-                    user.fullname = update_user.fullname
-                if update_user.pic_url:
-                    user.pic_url = update_user.pic_url
-
-                session.add(user)
-                session.commit()
-                print("user_data", user)
-                print("user_pic_url ", user.pic_url)
-                return user
-            except Exception:
+            user = session.get(User, username)
+            if not user:
                 raise HTTPException(status_code=404, detail="User not found")
 
+            if update_user.avatar:
+                user.avatar = update_user.avatar
+            if update_user.email:
+                user.email = update_user.email
+            if update_user.fullname:
+                user.fullname = update_user.fullname
+            if update_user.pic_url:
+                user.pic_url = update_user.pic_url
 
-    async def get_all_users(self):
+            session.commit()
+            session.refresh(user)
+            return user
+
+    async def get_all_users(self) -> List[UserSchema]:
         with Session(engine) as session:
-            try:
-                users = select(User)
-                users = session.execute(users).scalars().all()
-                user_dtos = [UserSchema.model_validate(user) for user in users]
-            except Exception:
-                raise HTTPException(status_code=404, detail="No users found")
+            users = session.execute(select(User)).scalars().all()
+            user_dtos = [UserSchema.model_validate(user) for user in users]
         return user_dtos
 
-    async def get_all_rooms(self):
+    async def get_all_rooms(self) -> List[RoomSchema]:
         with Session(engine) as session:
-            try:
-                rooms = select(Room)
-
-                rooms = session.execute(rooms).scalars().all()
-                room_dtos = [RoomSchema.model_validate(room) for room in rooms]
-            except Exception:
-                raise HTTPException(status_code=404, detail="No rooms found")
+            room_dtos = []
+            rooms = session.execute(select(Room)).scalars().all()
+            for room in rooms:
+                room_dtos.append(
+                    RoomSchema(
+                        room_id=room.room_id,
+                        room_name=room.room_name,
+                        description=room.description,
+                        users=[user.username for user in room.users],
+                    )
+                )
         return room_dtos
 
-
-    async def get_messages(self, room_id: str):
+    async def get_messages(self, room_id: str) -> List[MessageSchema]:
         with Session(engine) as session:
 
-            room_messages = select(Message).where(Message.room_id == room_id)
-            room_messages = session.execute(room_messages).scalars().all()
+            statement = select(Message).where(Message.room_id == room_id)
+            room_messages = session.execute(statement).scalars().all()
             # for msg in room_messages:
             msg_dtos = [MessageSchema.model_validate(msg) for msg in room_messages]
             sorted_msg_dtos = sorted(msg_dtos, key=lambda x: x.timestamp)
@@ -429,15 +557,15 @@ class RDSStorageImplementation(StorageInterface):
     async def send_message(self, content: Optional[str] = Form(None),
                            room_id: str = Form(...),
                            file: Optional[UploadFile] = File(None),
-                           username: str = Depends()):
+                           username: str = Depends()) -> MessageSchema:
 
         with Session(engine) as session:
-            try:
-                user = session.get(User, username)
-                room = session.get(Room, room_id)
-
-            except Exception:
-                raise HTTPException(status_code=404, detail="User/room not found")
+            user = session.get(User, username)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            room = session.get(Room, room_id)
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
 
             file_url = None
             if file:
@@ -458,7 +586,7 @@ class RDSStorageImplementation(StorageInterface):
                 room_id=room_id,
                 file_url=file_url
             )
-            # message_item.save()
+            msg_dto = MessageSchema.model_validate(message_item)
             session.add(message_item)
             print("file_url ", file_url)
             # Save UserMessage Info
@@ -469,36 +597,33 @@ class RDSStorageImplementation(StorageInterface):
             session.add(user_message_item)
             session.commit()
 
-        return message_item
+        return msg_dto
 
-    async def get_all_messages(self):
+    async def get_all_messages(self) -> List[MessageSchema]:
         with Session(engine) as session:
-            try:
-                messages = select(Message)
-                messages = session.execute(messages).scalars().all()
-                message_dtos = [MessageSchema.model_validate(msg) for msg in messages]
-                return message_dtos
-            except Exception:
-                raise HTTPException(status_code=404, detail="No messages found")
+            messages = session.execute(select(Message)).scalars().all()
+            message_dtos = [MessageSchema.model_validate(msg) for msg in messages]
+            return message_dtos
 
-
-    async def get_message_last_seen_info(self, room_id: str):
+    async def get_message_last_seen_info(self, room_id: str) -> List[MessageInfoDTO]:
         with Session(engine) as session:
-            try:
-                messages = select(Message).where(Message.room_id == room_id)
-                messages = session.execute(messages).scalars().all()
-                message_dtos = [MessageSchema.model_validate(msg) for msg in messages]
-                return message_dtos
-            except Exception:
-                raise HTTPException(status_code=404, detail="No messages found")
+            room_messages = session.execute(select(Message).where(Message.room_id == room_id)).scalars().all()
+            all_user_messages = []
+            for msg in room_messages:
+                user_message_statement = select(UserMessage).where(
+                    UserMessage.message_id == msg.message_id
+                )
+                user_messages_for_msg = session.execute(user_message_statement).scalars().all()
+                all_user_messages.extend(user_messages_for_msg)
 
-    async def get_all_invitees_and_join_requests(self):
+            session.commit()
+
+            message_dtos = [MessageInfoDTO.model_validate(msg) for msg in all_user_messages]
+            return message_dtos
+
+    async def get_all_invitees_and_join_requests(self) -> List[MembershipRequestSchema]:
         with Session(engine) as session:
-            try:
-                membership_requests = select(MembershipRequest)
-                membership_requests = session.execute(membership_requests).scalars().all()
-                membership_requests_dtos = [MembershipRequestSchema.model_validate(membership_request)
-                                            for membership_request in membership_requests]
-            except Exception:
-                raise HTTPException(status_code=404, detail="No membership requests found")
+            membership_requests = session.execute(select(MembershipRequest)).scalars().all()
+            membership_requests_dtos = [MembershipRequestSchema.model_validate(membership_request)
+                                        for membership_request in membership_requests]
             return membership_requests_dtos

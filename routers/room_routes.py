@@ -46,6 +46,10 @@ async def get_available_rooms(username: str = Depends(get_current_user)):
 async def get_room_details(room_id: str):
     return await storage.get_room_details(room_id)
 
+@router.get("/{room_id}/admins/", response_model=List[str])
+async def get_room_admins(room_id: str):
+    return await storage.get_room_admins(room_id)
+
 @router.post("/admin/add-user/", status_code=status.HTTP_200_OK)
 async def admin_add_user_to_room(
     add_user_to_room: AddUserToRoomDTO, 

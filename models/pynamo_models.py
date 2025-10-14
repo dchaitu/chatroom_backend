@@ -3,7 +3,7 @@ import uuid
 
 from pynamodb.indexes import GlobalSecondaryIndex, AllProjection
 from pynamodb.models import Model
-from pynamodb.attributes import UnicodeAttribute, UTCDateTimeAttribute, ListAttribute
+from pynamodb.attributes import UnicodeAttribute, UTCDateTimeAttribute, ListAttribute, BooleanAttribute
 from datetime import datetime, timezone, timedelta
 
 # Enable Pynamodb debugging
@@ -105,6 +105,7 @@ class RoomMembership(Model):
 
     room_id = UnicodeAttribute(hash_key=True)   # PK
     username = UnicodeAttribute(range_key=True) # SK
+    is_admin = BooleanAttribute(default=False)
     joined_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     last_read_at = UTCDateTimeAttribute(default=lambda: datetime.now(timezone.utc))
     last_read_message_id = UnicodeAttribute(null=True)

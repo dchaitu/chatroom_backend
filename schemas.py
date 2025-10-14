@@ -47,21 +47,15 @@ class UserLogin(BaseModel):
 class RoomSchema(RoomDTO):
     model_config = ConfigDict(from_attributes=True)
     users: List[str]
-    admins: List[str]
-
-    class Config:
-        from_attributes = True
-        orm_mode = True
 
 class UserSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     username: str
     fullname: str
     email: str
     avatar: str
     pic_url: Optional[str]
-
-    class Config:
-        from_attributes = True
+    password: Optional[str]
 
 class UpdateUserDTO(BaseModel):
     avatar: Optional[str] = None
@@ -76,16 +70,13 @@ class UserRoomSchema(BaseModel):
 
 
 class MessageSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     message_id: str
     content: str
     username: str
     room_id: str
     timestamp: Optional[datetime]
     file_url: Optional[str] = None
-
-
-    class Config:
-        from_attributes = True
 
 class MessageCreate(BaseModel):
     content: str
@@ -104,6 +95,7 @@ class MembershipRequestSchema(BaseModel):
     status: str
     created_by: str
     created_at: Optional[datetime]
+    model_config = ConfigDict(from_attributes=True)
 
 class UserActionDTO(BaseModel):
     requested_user: str
@@ -121,6 +113,7 @@ class RoomMembershipDTO(BaseModel):
 
 
 class MessageInfoDTO(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     message_id: str
     username: str
     read_at: Optional[datetime]
@@ -131,6 +124,7 @@ class ReplyMessageDTO(BaseModel):
 
 
 class ReplyThreadDTO(ReplyMessageDTO):
+    model_config = ConfigDict(from_attributes=True)
     thread_id: str
     reply_id: str
     username: str
@@ -147,6 +141,7 @@ emoji_pattern = re.compile(
 )
 
 class ReactionDTO(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     message_id: str
     reaction_type: str
 
@@ -160,4 +155,13 @@ class UserReactionDTO(ReactionDTO):
     username: str
     reacted_at: Optional[datetime]
 
+
+class MessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    message_id: str
+    content: Optional[str]
+    username: str
+    room_id: str
+    timestamp: datetime
+    file_url: Optional[str]
 

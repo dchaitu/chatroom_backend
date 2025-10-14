@@ -5,7 +5,7 @@ from fastapi import Form, Depends, UploadFile, File
 
 from schemas import MakeRoomAdmin, UserActionDTO, ReactionDTO, UserReactionDTO, ReplyThreadDTO, \
     ReplyMessageDTO, RoomMembershipDTO, RoomSchema, AddUserToRoomDTO, RoomUpdate, RoomCreate, UpdateUserDTO, UserLogin, \
-    UserCreate
+    UserCreate, MessageInfoDTO
 
 
 class StorageInterface(abc.ABC):
@@ -97,6 +97,11 @@ class StorageInterface(abc.ABC):
     @abc.abstractmethod
     async def get_room_details(self, room_id: str):
         pass
+
+    @abc.abstractmethod
+    async def get_room_admins(self, room_id: str):
+        pass
+
     @abc.abstractmethod
     async def admin_add_user_to_room(self,
                                      add_user_to_room: AddUserToRoomDTO, current_user: str
@@ -159,6 +164,6 @@ class StorageInterface(abc.ABC):
         pass
 
     @abc.abstractmethod
-    async def get_message_last_seen_info(self, room_id: str):
+    async def get_message_last_seen_info(self, room_id: str)-> List[MessageInfoDTO]:
         pass
 

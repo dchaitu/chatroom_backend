@@ -3,11 +3,10 @@ from typing import List, Optional
 from fastapi import APIRouter, status, Depends
 
 from constants import get_current_user
+from dependencies import storage
 from schemas import ReactionDTO, UserReactionDTO
-from storages.storage_implementation import StorageImplementation
 
 router = APIRouter(prefix="/reaction", tags=['Reaction'])
-storage = StorageImplementation()
 
 
 @router.post("/create/", status_code=status.HTTP_201_CREATED, response_model=Optional[UserReactionDTO])
