@@ -1,4 +1,6 @@
-from starlette.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import Request
 
 from constants import UPLOAD_DIR
 
@@ -10,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 import os
 import boto3
+import time
 
 
 print("External Imports", flush=True)
@@ -23,7 +26,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 origins = [
     "http://localhost",
     "http://localhost:3000",
-    '*'
+    "https://n1yahnot4c.execute-api.us-east-1.amazonaws.com/dev",
 ]
 
 
@@ -82,7 +85,26 @@ async def upload_file_with_message(file: UploadFile = File(...)):
 #     print("Saved message:", message)
 #     return message
 
+@app.get("/hello")
+def hello():
+    return {"message":"Hello World"}
 
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
+
+@app.middleware("http")
+async def check_header(request: Request, callback):
+    header = request.headers.get("X-User-Type")
+    if header is None:
+        return JSONResponse(status_code=401, content={"detail": "Missing X-User-Type header"})
+    if header != "cool":
+        return JSONResponse(status_code=401, content={"detail": "Not cool enough"})
+    return await callback(request)
 
 
 def handler(event, context):

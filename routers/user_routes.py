@@ -6,12 +6,12 @@ router = APIRouter(tags=['User'])
 from constants import get_current_user
 from schemas import UserCreate, UserLogin, UserSchema, UpdateUserDTO
 
-@router.post("/register/", status_code=201)
+@router.post("/register", status_code=201)
 async def register_user(user_info: UserCreate):
     await storage.register_user(user_info)
 
 
-@router.post("/login/", status_code=200)
+@router.post("/login", status_code=200)
 async def login(user_info: UserLogin):
     return await storage.login(user_info)
 

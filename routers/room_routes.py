@@ -30,7 +30,7 @@ async def user_leave_room(room_id: str, username: str = Depends(get_current_user
 async def mark_as_read(room_id: str, username: str = Depends(get_current_user)):
     return await storage.mark_as_read(room_id, username)
 
-@router.post("/unread-count/")
+@router.post("/unread-count")
 async def get_unread_counts(room_ids: List[str], username: str = Depends(get_current_user)):
     return await storage.get_unread_counts(room_ids, username)
 
@@ -42,11 +42,11 @@ async def get_user_rooms(username: str = Depends(get_current_user)):
 async def get_available_rooms(username: str = Depends(get_current_user)):
     return await storage.get_available_rooms(username)
 
-@router.get("/{room_id}/", response_model=RoomSchema)
+@router.get("/{room_id}", response_model=RoomSchema)
 async def get_room_details(room_id: str):
     return await storage.get_room_details(room_id)
 
-@router.get("/{room_id}/admins/", response_model=List[str])
+@router.get("/{room_id}/admins", response_model=List[str])
 async def get_room_admins(room_id: str):
     return await storage.get_room_admins(room_id)
 

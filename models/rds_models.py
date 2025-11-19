@@ -11,9 +11,8 @@ import sqlalchemy as sa
 class Base(DeclarativeBase):
     pass
 
-# engine = sa.create_engine("postgresql://neondb_owner:npg_2iCJBEO0MIwj@ep-shiny-mode-ad5ttg3k-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+# engine = sa.create_engine("postgresql://neondb_owner:npg_Yvh8Rm2yDuWG@ep-bitter-flower-a4cbrm5z-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
 engine = sa.create_engine("sqlite:///test.db")
-
 association_table = Table(
     "association_table",
     Base.metadata,
@@ -48,6 +47,7 @@ class User(Base):
     )
 
     room_memberships: Mapped[list["RoomMembership"]] = relationship("RoomMembership", back_populates="user")
+    connections: Mapped[list["Connection"]] = relationship("Connection", back_populates="user")
     # connections: Mapped[list["Connection"]] = relationship("Connection", back_populates="user")
 
     def __repr__(self):
@@ -65,6 +65,7 @@ class Room(Base):
     membership_requests: Mapped[list["MembershipRequest"]] = relationship("MembershipRequest", back_populates="room")
     room_memberships: Mapped[list["RoomMembership"]] = relationship("RoomMembership", back_populates="room")
     messages: Mapped[list["Message"]] = relationship("Message", back_populates="room")
+    connections: Mapped[list["Connection"]] = relationship("Connection", back_populates="room")
 
 
 
@@ -160,21 +161,25 @@ class UserReaction(Base):
     message = relationship("Message", back_populates="reactions")
     user = relationship("User", back_populates="reactions")
 
-# class Connection(Base):
-#     __tablename__ = "connections"
-#
-#     connection_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-#     username: Mapped[str] = mapped_column(ForeignKey("User.username"), nullable=False)
-#     room_id: Mapped[str] = mapped_column(ForeignKey("Room.room_id"), nullable=False)
-#     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-#
-#     # relationships
-#     user = relationship("User", back_populates="connections")
-#     room = relationship("Room", back_populates="connections")
+class Connection(Base):
+    __tablename__ = "connections"
+
+    connection_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    username: Mapped[str] = mapped_column(ForeignKey("User.username"), nullable=False)
+    room_id: Mapped[str] = mapped_column(ForeignKey("Room.room_id"), nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    # relationships
+    user = relationship("User", back_populates="connections")
+    room = relationship("Room", back_populates="connections")
 
 # Create all tables
 def create_tables() -> None:
     Base.metadata.create_all(engine)
 
+def drop_tables():
+    Base.metadata.drop_all(engine)
+
 if __name__ == "__main__":
     create_tables()
+    # drop_tables()

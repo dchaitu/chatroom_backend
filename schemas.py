@@ -67,7 +67,12 @@ class UserRoomSchema(BaseModel):
     username: str
     room_id: str
 
-
+class ConnectionSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    connection_id: str
+    username: str
+    room_id: str
+    connected_at: Optional[datetime]
 
 class MessageSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)

@@ -19,7 +19,7 @@ from schemas import MakeRoomAdmin, RoomCreate, RoomUpdate, RoomSchema, AddUserTo
 
 
 class RDSStorageImplementation(StorageInterface):
-    async def create_room_admin(self, room_admin: MakeRoomAdmin) -> Dict[str, str]:
+    async def create_room_admin(self, room_admin: MakeRoomAdmin) -> RoomSchema:
         room = select(Room).where(Room.room_id == room_admin.room_id)
 
         with Session(engine) as session:
@@ -31,7 +31,13 @@ class RDSStorageImplementation(StorageInterface):
                 if membership.username == room_admin.username:
                     membership.is_admin = True
                     session.commit()
-        return {"message": f"User {room_admin.username} is now an admin of room {room.room_id}"}
+        print(f"User {room_admin.username} is now an admin of room {room.room_id}")
+        return RoomSchema(
+            room_id=room.room_id,
+            room_name=room.room_name,
+            description=room.description,
+            users=[m.username for m in room.room_memberships],
+        )
 
     async def get_pending_requests(self, request_type: str, username: str) -> List[MembershipRequestSchema]:
         with Session(engine) as session:
@@ -225,6 +231,14 @@ class RDSStorageImplementation(StorageInterface):
             session.add(room_obj)
             session.commit()
 
+            room_membership = RoomMembership(
+                room_id=room.room_id,
+                username=username,
+                is_admin=True,
+            )
+            session.add(room_membership)
+            session.commit()
+
         return {"message": f"Room created successfully: {room.room_id} by {username}"}
 
     async def update_room(self, room: RoomUpdate, username: str) -> Dict[str, str]:
@@ -255,34 +269,16 @@ class RDSStorageImplementation(StorageInterface):
     async def mark_as_read(self, room_id: str, username: str) -> Dict[str, str]:
         """Update last_read_at when user opens a room"""
         with Session(engine) as session:
-            statement = select(RoomMembership).where(
-                (RoomMembership.room_id == room_id) & (RoomMembership.username == username))
-            membership = session.execute(statement).scalar_one_or_none()
-            print(f"membership is {membership}")
-            if not membership:
-                raise HTTPException(status_code=404, detail="Membership not found")
+            membership = session.query(RoomMembership).filter_by(
+                room_id=room_id,
+                username=username
+            ).first()
 
-            membership.last_read_at = datetime.now(timezone.utc)
-            session.commit()
+            if membership:
+                membership.last_read_at = datetime.utcnow()
+                session.commit()
 
-            room_messages = session.execute(select(Message).where(Message.room_id == room_id)).scalars().all()
-            for msg in room_messages:
-                user_message_statement = select(UserMessage).where(
-                    (UserMessage.message_id == msg.message_id) &
-                    (UserMessage.username == username)
-                )
-                user_message = session.execute(user_message_statement).scalar_one_or_none()
-
-                if not user_message:
-                    user_message = UserMessage(
-                        message_id=msg.message_id,
-                        username=username,
-                        read_at=datetime.now(timezone.utc)
-                    )
-                    session.add(user_message)
-            session.commit()
-
-            return {"message": "Marked as read"}
+        return {"status": "ok"}
 
     async def get_unread_counts(self, room_ids: List[str], username: str) -> List[Dict[str, Any]]:
         with Session(engine) as session:
@@ -558,7 +554,10 @@ class RDSStorageImplementation(StorageInterface):
                            room_id: str = Form(...),
                            file: Optional[UploadFile] = File(None),
                            username: str = Depends()) -> MessageSchema:
-
+        import boto3
+        S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME","chatroom-s3-files")
+        AWS_REGION = os.getenv("REGION_NAME","us-east-1")
+        s3_client = boto3.client('s3', region_name=AWS_REGION)
         with Session(engine) as session:
             user = session.get(User, username)
             if not user:
@@ -571,12 +570,28 @@ class RDSStorageImplementation(StorageInterface):
             if file:
                 print("**********File Uploaded**********")
                 ext = os.path.splitext(file.filename)[1]
-                fname = f"{file.filename}{ext}"
-                file_path = os.path.join(UPLOAD_DIR, fname)
-                with open(file_path, "wb") as buffer:
-                    shutil.copyfileobj(file.file, buffer)
+                fname = f"{uuid.uuid4()}{ext}"
+                file_bytes = await file.read()
+                try:
+                    from boto3 import s3
+                    # s3_client.put_object(
+                    #     Bucket=S3_BUCKET_NAME,
+                    #     Key=fname,
+                    #     Body=file_bytes,
+                    #     ContentType=file.content_type
+                    # )
+                    s3_client.upload_fileobj(
+                        file.file,
+                        S3_BUCKET_NAME,
+                        f"uploads/{fname}",
+                        ExtraArgs={"ContentType": file.content_type}
+                    )
+                    file_url = f"https://{S3_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/uploads/{fname}"
+                    print(f"Uploaded to {file_url}")
+                except Exception as e:
+                    print(f"File upload error: {e}")
+                    raise HTTPException(status_code=500, detail="Failed to upload file to S3")
 
-                file_url = f"/{UPLOAD_DIR}/{fname}"
 
             # Save message
             message_item = Message(
@@ -586,7 +601,6 @@ class RDSStorageImplementation(StorageInterface):
                 room_id=room_id,
                 file_url=file_url
             )
-            msg_dto = MessageSchema.model_validate(message_item)
             session.add(message_item)
             print("file_url ", file_url)
             # Save UserMessage Info
@@ -596,6 +610,8 @@ class RDSStorageImplementation(StorageInterface):
             )
             session.add(user_message_item)
             session.commit()
+            msg_dto = MessageSchema.model_validate(message_item)
+
 
         return msg_dto
 
