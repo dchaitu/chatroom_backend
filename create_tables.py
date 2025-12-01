@@ -1,5 +1,5 @@
 import os
-from models import User, Room, Message, Connection, MembershipRequest, RoomMembership, UserMessage, ReplyThread, \
+from models.rds_models import User, Room, Message, Connection, MembershipRequest, RoomMembership, UserMessage, ReplyThread, \
     UserReaction
 
 # Invite, JoinRequest
