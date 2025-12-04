@@ -178,6 +178,7 @@ class RDSStorageImplementation(StorageInterface):
             )
             session.add(reply_thread)
             session.commit()
+            session.refresh(reply_thread)
             reply_thread_dto = ReplyThreadDTO.model_validate(reply_thread)
         return reply_thread_dto
 
