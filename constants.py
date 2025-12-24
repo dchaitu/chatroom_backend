@@ -62,10 +62,3 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Security(securi
 
 def convert_dto_to_json(dto)-> Dict:
     return json.loads(dto.model_dump_json())
-
-def get_db():
-    db = Session(engine)
-    try:
-        yield db
-    finally:
-        db.close()
