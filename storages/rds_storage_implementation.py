@@ -1,25 +1,25 @@
+import json
 import os
-import shutil
 import uuid
 from collections import defaultdict
 from datetime import timezone, datetime, timedelta
 from typing import List, Optional, Dict, Any
 
 from fastapi import HTTPException, status, Form, UploadFile, File, Depends
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from constants import hash_password, create_access_token, UPLOAD_DIR
+from constants import hash_password, create_access_token, get_db
 from interactors.storage_interfaces.storage_interface import StorageInterface
 from models.rds_models import User, engine, RoomMembership, Room, MembershipRequest, UserReaction, ReplyThread, Message, \
-    UserMessage
+    UserMessage, Connection
 from schemas import MakeRoomAdmin, RoomCreate, RoomUpdate, RoomSchema, AddUserToRoomDTO, RoomMembershipDTO, UserCreate, \
     UserLogin, UserSchema, UpdateUserDTO, MessageSchema, MembershipRequestSchema, UserActionDTO, ReactionDTO, \
-    ReplyMessageDTO, ReplyThreadDTO, UserReactionDTO, RoomDTO, MessageInfoDTO
+    ReplyMessageDTO, ReplyThreadDTO, UserReactionDTO, MessageInfoDTO
 
 
 class RDSStorageImplementation(StorageInterface):
-    async def create_room_admin(self, room_admin: MakeRoomAdmin) -> RoomSchema:
+    async def create_room_admin(self, room_admin: MakeRoomAdmin, db: Session = Depends(get_db)) -> RoomSchema:
         room = select(Room).where(Room.room_id == room_admin.room_id)
 
         with Session(engine) as session:
@@ -267,42 +267,82 @@ class RDSStorageImplementation(StorageInterface):
                 session.commit()
 
     async def mark_as_read(self, room_id: str, username: str) -> Dict[str, str]:
-        """Update last_read_at when user opens a room"""
+        """
+        Update last_read_at when user opens a room.
+        Also create UserMessage entries for all messages in the room that the user hasn't seen yet.
+        """
         with Session(engine) as session:
+            # 1. Update RoomMembership last_read_at
             membership = session.query(RoomMembership).filter_by(
                 room_id=room_id,
                 username=username
             ).first()
 
+            now_utc = datetime.now(timezone.utc)
+
             if membership:
-                membership.last_read_at = datetime.utcnow()
-                session.commit()
+                membership.last_read_at = now_utc
+                session.add(membership)
+
+            # 2. Create UserMessage entries for unread messages
+            # Get all message IDs in the room
+            room_messages_stmt = select(Message.message_id).where(Message.room_id == room_id)
+            room_msg_ids = set(session.execute(room_messages_stmt).scalars().all())
+
+            if room_msg_ids:
+                # Get message IDs already marked as read by this user
+                read_messages_stmt = select(UserMessage.message_id).where(
+                    (UserMessage.username == username) &
+                    (UserMessage.message_id.in_(room_msg_ids))
+                )
+                read_msg_ids = set(session.execute(read_messages_stmt).scalars().all())
+
+                # Identify unread messages
+                unread_msg_ids = room_msg_ids - read_msg_ids
+
+                # Bulk create UserMessage entries
+                new_user_messages = [
+                    UserMessage(
+                        message_id=msg_id,
+                        username=username,
+                        read_at=now_utc
+                    ) for msg_id in unread_msg_ids
+                ]
+                if new_user_messages:
+                    session.add_all(new_user_messages)
+
+            session.commit()
 
         return {"status": "ok"}
 
     async def get_unread_counts(self, room_ids: List[str], username: str) -> List[Dict[str, Any]]:
         with Session(engine) as session:
-            statement = select(RoomMembership).where(
-                (RoomMembership.username == username) &
-                (RoomMembership.room_id.in_(room_ids))
-            )
-            memberships = session.execute(statement).scalars().all()
+            memberships = session.query(RoomMembership).filter(
+                RoomMembership.username == username,
+                RoomMembership.room_id.in_(room_ids)
+            ).all()
+
             unread_counts = []
             for membership in memberships:
                 last_read_at = membership.last_read_at
+
                 if last_read_at:
-                    count_statement = select(func.count(Message.message_id)).where(
-                        (Message.room_id == membership.room_id) &
-                        (Message.timestamp > last_read_at)
-                    )
-                    count = session.execute(count_statement).scalar_one()
+                    count = session.query(Message).filter(
+                        Message.room_id == membership.room_id,
+                        Message.timestamp > last_read_at
+                    ).count()
                 else:
-                    count_statement = select(func.count(Message.message_id)).where(
+                    # All messages are unread
+                    count = session.query(Message).filter(
                         Message.room_id == membership.room_id
-                    )
-                    count = session.execute(count_statement).scalar_one()
-                unread_counts.append({"room_id": membership.room_id, "count": count})
-        return unread_counts
+                    ).count()
+
+                unread_counts.append({
+                    "room_id": membership.room_id,
+                    "count": count
+                })
+
+            return unread_counts
 
     async def get_user_rooms(self, username: str) -> List[RoomSchema]:
         with Session(engine) as session:
@@ -553,11 +593,15 @@ class RDSStorageImplementation(StorageInterface):
     async def send_message(self, content: Optional[str] = Form(None),
                            room_id: str = Form(...),
                            file: Optional[UploadFile] = File(None),
-                           username: str = Depends()) -> MessageSchema:
+                           username: str = Depends()) -> Dict:
         import boto3
         S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME","chatroom-s3-files")
         AWS_REGION = os.getenv("REGION_NAME","us-east-1")
         s3_client = boto3.client('s3', region_name=AWS_REGION)
+
+        API_GW_MANAGEMENT_ENDPOINT = os.environ.get("API_GW_MANAGEMENT_ENDPOINT")
+        apigw = boto3.client("apigatewaymanagementapi", endpoint_url=API_GW_MANAGEMENT_ENDPOINT)
+
         with Session(engine) as session:
             user = session.get(User, username)
             if not user:
@@ -611,9 +655,25 @@ class RDSStorageImplementation(StorageInterface):
             session.add(user_message_item)
             session.commit()
             msg_dto = MessageSchema.model_validate(message_item)
+            conns = session.query(Connection).filter(Connection.room_id == room_id).all()
+            payload = {"event": "new_message", "room_id": room_id, "message": {
+                "message_id": message_item.message_id,
+                "content": message_item.content,
+                "username": message_item.username,
+                "room_id": message_item.room_id,
+                "timestamp": message_item.timestamp.isoformat(),
+                "file_url": message_item.file_url
+            }}
+            for c in conns:
+                try:
+                    apigw.post_to_connection(ConnectionId=c.connection_id, Data=json.dumps(payload).encode('utf-8'))
+                except apigw.exceptions.GoneException:
+                    # stale connection - delete
+                    session.delete(c)
+                    session.commit()
 
 
-        return msg_dto
+        return payload["message"]
 
     async def get_all_messages(self) -> List[MessageSchema]:
         with Session(engine) as session:
@@ -623,18 +683,18 @@ class RDSStorageImplementation(StorageInterface):
 
     async def get_message_last_seen_info(self, room_id: str) -> List[MessageInfoDTO]:
         with Session(engine) as session:
-            room_messages = session.execute(select(Message).where(Message.room_id == room_id)).scalars().all()
-            all_user_messages = []
-            for msg in room_messages:
-                user_message_statement = select(UserMessage).where(
-                    UserMessage.message_id == msg.message_id
-                )
-                user_messages_for_msg = session.execute(user_message_statement).scalars().all()
-                all_user_messages.extend(user_messages_for_msg)
+            # Get all UserMessages for messages in this room
+            statement = select(UserMessage).join(Message).where(Message.room_id == room_id)
+            user_messages = session.execute(statement).scalars().all()
+            
+            message_dtos = [
+                MessageInfoDTO(
+                    message_id=um.message_id,
+                    username=um.username,
+                    read_at=um.read_at
+                ) for um in user_messages
+            ]
 
-            session.commit()
-
-            message_dtos = [MessageInfoDTO.model_validate(msg) for msg in all_user_messages]
             return message_dtos
 
     async def get_all_invitees_and_join_requests(self) -> List[MembershipRequestSchema]:

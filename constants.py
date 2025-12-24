@@ -1,5 +1,5 @@
-from datetime import datetime
-from enum import Enum
+import json
+from typing import Dict
 
 import jwt
 import hashlib
@@ -8,10 +8,12 @@ import requests
 from datetime import datetime, timedelta, UTC
 from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
 
+from models.rds_models import engine
 
 secret_key = '6Lcp4Y0rAAAAAMx574CaTgPELQT7aT24Aprreo84'
-JWT_SECRET = "p1beyVW)E>b{1gya{,I+yd]>DfN/\9#*"
+JWT_SECRET = "p1beyVW)E>b{1gya{,I+yd]>DfN/#*"
 UPLOAD_DIR = "uploads"
 security = HTTPBearer()
 
@@ -56,3 +58,14 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Security(securi
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
+
+
+def convert_dto_to_json(dto)-> Dict:
+    return json.loads(dto.model_dump_json())
+
+def get_db():
+    db = Session(engine)
+    try:
+        yield db
+    finally:
+        db.close()

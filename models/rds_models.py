@@ -11,8 +11,8 @@ import sqlalchemy as sa
 class Base(DeclarativeBase):
     pass
 
-# engine = sa.create_engine("postgresql://neondb_owner:npg_Yvh8Rm2yDuWG@ep-bitter-flower-a4cbrm5z-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
-engine = sa.create_engine("sqlite:///test.db")
+engine = sa.create_engine("postgresql://neondb_owner:npg_Yvh8Rm2yDuWG@ep-bitter-flower-a4cbrm5z-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
+# engine = sa.create_engine("sqlite:///test.db")
 association_table = Table(
     "association_table",
     Base.metadata,
