@@ -20,9 +20,12 @@ from schemas import MakeRoomAdmin, RoomCreate, RoomUpdate, RoomSchema, AddUserTo
 
 
 class RDSStorageImplementation(StorageInterface):
-    async def create_room_admin(self, room_admin: MakeRoomAdmin, db: Session = Depends(get_db)) -> RoomSchema:
+    def __init__(self, db: Session):
+        self.db = db
+
+    async def create_room_admin(self, room_admin: MakeRoomAdmin) -> RoomSchema:
         statement = select(Room).where(Room.room_id == room_admin.room_id)
-        room = db.execute(statement).scalars().first()
+        room = self.db.execute(statement).scalars().first()
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
 
@@ -30,7 +33,7 @@ class RDSStorageImplementation(StorageInterface):
         for membership in room.room_memberships:
             if membership.username == room_admin.username:
                 membership.is_admin = True
-                db.commit()
+                self.db.commit()
                 updated = True
                 break
 
@@ -45,13 +48,13 @@ class RDSStorageImplementation(StorageInterface):
             users=[m.username for m in room.room_memberships],
         )
 
-    async def get_pending_requests(self, request_type: str, username: str, db: Session = Depends(get_db)) -> List[MembershipRequestSchema]:
+    async def get_pending_requests(self, request_type: str, username: str) -> List[MembershipRequestSchema]:
 
         admin_rooms_stmt = select(RoomMembership.room_id).where(
             (RoomMembership.username == username) & 
             (RoomMembership.is_admin == True)
         )
-        admin_rooms_result = db.execute(admin_rooms_stmt).scalars().all()
+        admin_rooms_result = self.db.execute(admin_rooms_stmt).scalars().all()
         
         if not admin_rooms_result:
             return []
@@ -62,7 +65,7 @@ class RDSStorageImplementation(StorageInterface):
             (MembershipRequest.request_type == request_type) &
             (MembershipRequest.status == "pending")
         )
-        pending_requests = db.execute(statement).scalars().all()
+        pending_requests = self.db.execute(statement).scalars().all()
         pending_requests_dtos = [MembershipRequestSchema.model_validate(request) for request in pending_requests]
         return pending_requests_dtos
 
@@ -76,7 +79,7 @@ class RDSStorageImplementation(StorageInterface):
         action = user_action.action
         user_invited = user_action.requested_user
 
-        membership_request = db.scalar(
+        membership_request = self.db.scalar(
             select(MembershipRequest).where(
                 (MembershipRequest.room_id == room_id)
                 & (
@@ -90,15 +93,15 @@ class RDSStorageImplementation(StorageInterface):
         if membership_request is None:
             raise HTTPException(status_code=404, detail=f"Membership request with room_id={room_id} not found")
 
-        room = db.scalar(select(Room).where(Room.room_id == room_id))
-        user = db.scalar(select(User).where(User.username == user_invited))
+        room = self.db.scalar(select(Room).where(Room.room_id == room_id))
+        user = self.db.scalar(select(User).where(User.username == user_invited))
 
         if membership_request.request_type == "invite":
             if current_user != membership_request.username:
                 raise HTTPException(status_code=403, detail="Only the invited user can respond to an invite")
 
         elif membership_request.request_type == "join_request":
-            is_user_admin = db.scalar(
+            is_user_admin = self.db.scalar(
                 select(RoomMembership.is_admin).where(
                     (RoomMembership.room_id == room_id)
                     & (RoomMembership.username == current_user)
@@ -119,20 +122,20 @@ class RDSStorageImplementation(StorageInterface):
             if room not in user.rooms:
                 user.rooms.append(room)
 
-            db.add(RoomMembership(room_id=room.room_id, username=user.username))
+            self.db.add(RoomMembership(room_id=room.room_id, username=user.username))
 
         elif action == "reject":
             membership_request.status = "rejected"
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
 
-        db.add(membership_request)
-        db.commit()
+        self.db.add(membership_request)
+        self.db.commit()
         return {"message": f"Membership request {action} for user {user_invited} in room {room_id}"}
 
 
-    async def create_reaction_to_message(self, reaction: ReactionDTO, username: str, db: Session = Depends(get_db)) -> UserReaction:
-        user_reaction = db.execute(
+    async def create_reaction_to_message(self, reaction: ReactionDTO, username: str) -> UserReaction:
+        user_reaction = self.db.execute(
             select(UserReaction).where(
                 (UserReaction.message_id == reaction.message_id) & (UserReaction.username == username)
             )
@@ -140,8 +143,8 @@ class RDSStorageImplementation(StorageInterface):
 
         if user_reaction:
             if user_reaction.reaction_type == reaction.reaction_type:
-                db.delete(user_reaction)
-                db.commit()
+                self.db.delete(user_reaction)
+                self.db.commit()
                 return user_reaction
             else:
                 user_reaction.reaction_type = reaction.reaction_type
@@ -153,69 +156,69 @@ class RDSStorageImplementation(StorageInterface):
                 reaction_type=reaction.reaction_type,
                 reacted_at=datetime.now(timezone.utc)
             )
-            db.add(user_reaction)
+            self.db.add(user_reaction)
 
-        db.commit()
-        db.refresh(user_reaction)
+        self.db.commit()
+        self.db.refresh(user_reaction)
         return user_reaction
 
-    async def get_reactions_to_messages_in_room(self, room_id: str, db: Session = Depends(get_db)) -> List[UserReactionDTO]:
+    async def get_reactions_to_messages_in_room(self, room_id: str) -> List[UserReactionDTO]:
         statement = select(UserReaction).join(Message).where(Message.room_id == room_id)
-        reactions = db.execute(statement).scalars().all()
+        reactions = self.db.execute(statement).scalars().all()
         return [UserReactionDTO.model_validate(reaction) for reaction in reactions]
 
 
-    async def get_all_reactions(self, db: Session = Depends(get_db)) -> List[UserReaction]:
+    async def get_all_reactions(self) -> List[UserReaction]:
         statement = select(UserReaction)
         reactions = []
-        reactions = db.execute(statement).scalars().all()
+        reactions = self.db.execute(statement).scalars().all()
         return reactions
 
-    async def create_reply_to_message(self, reply_message: ReplyMessageDTO, username: str, db: Session = Depends(get_db)) -> ReplyThreadDTO:
+    async def create_reply_to_message(self, reply_message: ReplyMessageDTO, username: str) -> ReplyThreadDTO:
         reply_thread = ReplyThread(
             message_id=reply_message.message_id,
             content=reply_message.content,
             username=username,
             timestamp=datetime.now(timezone.utc)
         )
-        db.add(reply_thread)
-        db.commit()
+        self.db.add(reply_thread)
+        self.db.commit()
         reply_thread_dto = ReplyThreadDTO.model_validate(reply_thread)
         return reply_thread_dto
 
-    async def get_message_reply_count(self, message_id: str, db: Session = Depends(get_db)) -> Dict[str, int]:
+    async def get_message_reply_count(self, message_id: str) -> Dict[str, int]:
         statement = select(ReplyThread).where(ReplyThread.message_id == message_id)
-        replies_for_message = db.execute(statement).scalars().all()
+        replies_for_message = self.db.execute(statement).scalars().all()
         return {message_id: len(replies_for_message)}
 
-    async def get_all_message_reply_count(self, db: Session = Depends(get_db)) -> Dict[str, int]:
+    async def get_all_message_reply_count(self) -> Dict[str, int]:
         statement = select(ReplyThread)
         message_wise_replies_count = defaultdict(int)
-        replies_for_message = db.execute(statement).scalars().all()
+        replies_for_message = self.db.execute(statement).scalars().all()
         for reply in replies_for_message:
             message_wise_replies_count[reply.message_id] += 1
 
         return message_wise_replies_count
 
-    async def show_replies_for_messages(self, message_id: str, db: Session = Depends(get_db)) -> List[ReplyThreadDTO]:
+    async def show_replies_for_messages(self, message_id: str) -> List[ReplyThreadDTO]:
         statement = select(ReplyThread).where(ReplyThread.message_id == message_id)
-        replies_for_message = db.execute(statement).scalars().all()
+        replies_for_message = self.db.execute(statement).scalars().all()
         replies_for_message.sort(key=lambda r: r.timestamp)
 
         return [ReplyThreadDTO.model_validate(reply) for reply in replies_for_message]
 
-    async def show_all_replies(self, db: Session = Depends(get_db)) -> List[ReplyThreadDTO]:
+    async def show_all_replies(self) -> List[ReplyThreadDTO]:
         statement = select(ReplyThread)
-        replies = db.execute(statement).scalars().all()
+        replies = self.db.execute(statement).scalars().all()
         # replies.sort(key=lambda r: r.timestamp)
         return [ReplyThreadDTO.model_validate(reply) for reply in replies]
 
-    async def create_room(self, room: RoomCreate, username: str, db: Session = Depends(get_db)) -> Dict[str, str]:
-        user = db.get(User, username)
+    async def create_room(self, room: RoomCreate, username: str) -> Dict[str, str]:
+        user = self.db.get(User, username)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        check_room = db.get(Room, room.room_id)
+        check_room = self.db.get(Room, room.room_id)
         if check_room:
             raise HTTPException(status_code=400, detail="Room already exists")
 
@@ -225,49 +228,49 @@ class RDSStorageImplementation(StorageInterface):
             description=room.description,
             users=[user],
         )
-        db.add(room_obj)
-        db.commit()
+        self.db.add(room_obj)
+        self.db.commit()
 
         room_membership = RoomMembership(
             room_id=room.room_id,
             username=username,
             is_admin=True,
         )
-        db.add(room_membership)
-        db.commit()
+        self.db.add(room_membership)
+        self.db.commit()
 
         return {"message": f"Room created successfully: {room.room_id} by {username}"}
 
-    async def update_room(self, room: RoomUpdate, username: str, db: Session = Depends(get_db)) -> Dict[str, str]:
-        existing_room = db.get(Room, room.room_id)
+    async def update_room(self, room: RoomUpdate, username: str) -> Dict[str, str]:
+        existing_room = self.db.get(Room, room.room_id)
         if existing_room is None:
             raise HTTPException(status_code=404, detail="Room not found")
         if room.room_name:
             existing_room.room_name = room.room_name
         if room.description:
             existing_room.description = room.description
-        db.commit()
+        self.db.commit()
         return {"message": f"Updated Room fields successfully: {room.room_name}"}
 
-    async def user_leave_room(self, room_id: str, username: str, db: Session = Depends(get_db)) -> None:
-        user = db.get(User, username)
+    async def user_leave_room(self, room_id: str, username: str) -> None:
+        user = self.db.get(User, username)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        room = db.get(Room, room_id)
+        room = self.db.get(Room, room_id)
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
 
         if room in user.rooms:
             user.rooms.remove(room)
-            db.commit()
+            self.db.commit()
 
-    async def mark_as_read(self, room_id: str, username: str, db: Session = Depends(get_db)) -> Dict[str, str]:
+    async def mark_as_read(self, room_id: str, username: str) -> Dict[str, str]:
         """
         Update last_read_at when user opens a room.
         Also create UserMessage entries for all messages in the room that the user hasn't seen yet.
         """
         # 1. Update RoomMembership last_read_at
-        membership = db.query(RoomMembership).filter_by(
+        membership = self.db.query(RoomMembership).filter_by(
             room_id=room_id,
             username=username
         ).first()
@@ -276,12 +279,12 @@ class RDSStorageImplementation(StorageInterface):
 
         if membership:
             membership.last_read_at = now_utc
-            db.add(membership)
+            self.db.add(membership)
 
         # 2. Create UserMessage entries for unread messages
         # Get all message IDs in the room
         room_messages_stmt = select(Message.message_id).where(Message.room_id == room_id)
-        room_msg_ids = set(db.execute(room_messages_stmt).scalars().all())
+        room_msg_ids = set(self.db.execute(room_messages_stmt).scalars().all())
 
         if room_msg_ids:
             # Get message IDs already marked as read by this user
@@ -289,7 +292,7 @@ class RDSStorageImplementation(StorageInterface):
                 (UserMessage.username == username) &
                 (UserMessage.message_id.in_(room_msg_ids))
             )
-            read_msg_ids = set(db.execute(read_messages_stmt).scalars().all())
+            read_msg_ids = set(self.db.execute(read_messages_stmt).scalars().all())
 
             # Identify unread messages
             unread_msg_ids = room_msg_ids - read_msg_ids
@@ -303,14 +306,14 @@ class RDSStorageImplementation(StorageInterface):
                 ) for msg_id in unread_msg_ids
             ]
             if new_user_messages:
-                db.add_all(new_user_messages)
+                self.db.add_all(new_user_messages)
 
-        db.commit()
+        self.db.commit()
 
         return {"status": "ok"}
 
-    async def get_unread_counts(self, room_ids: List[str], username: str, db: Session = Depends(get_db)) -> List[Dict[str, Any]]:
-        memberships = db.query(RoomMembership).filter(
+    async def get_unread_counts(self, room_ids: List[str], username: str) -> List[Dict[str, Any]]:
+        memberships = self.db.query(RoomMembership).filter(
             RoomMembership.username == username,
             RoomMembership.room_id.in_(room_ids)
         ).all()
@@ -320,13 +323,13 @@ class RDSStorageImplementation(StorageInterface):
             last_read_at = membership.last_read_at
 
             if last_read_at:
-                count = db.query(Message).filter(
+                count = self.db.query(Message).filter(
                     Message.room_id == membership.room_id,
                     Message.timestamp > last_read_at
                 ).count()
             else:
                 # All messages are unread
-                count = db.query(Message).filter(
+                count = self.db.query(Message).filter(
                     Message.room_id == membership.room_id
                 ).count()
 
@@ -337,8 +340,8 @@ class RDSStorageImplementation(StorageInterface):
 
         return unread_counts
 
-    async def get_user_rooms(self, username: str, db: Session = Depends(get_db)) -> List[RoomSchema]:
-        user = db.get(User, username)
+    async def get_user_rooms(self, username: str) -> List[RoomSchema]:
+        user = self.db.get(User, username)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         rooms = user.rooms
@@ -354,12 +357,12 @@ class RDSStorageImplementation(StorageInterface):
             )
         return room_dtos
 
-    async def get_available_rooms(self, username: str, db: Session = Depends(get_db)) -> List[RoomSchema]:
-        user = db.get(User, username)
+    async def get_available_rooms(self, username: str) -> List[RoomSchema]:
+        user = self.db.get(User, username)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         user_rooms = user.rooms
-        all_rooms = db.execute(select(Room)).scalars().all()
+        all_rooms = self.db.execute(select(Room)).scalars().all()
         available_rooms = [room for room in all_rooms if room not in user_rooms]
         room_dtos = []
         for room in available_rooms:
@@ -373,8 +376,8 @@ class RDSStorageImplementation(StorageInterface):
             )
         return room_dtos
 
-    async def get_room_details(self, room_id: str, db: Session = Depends(get_db)) -> RoomSchema:
-        room = db.get(Room, room_id)
+    async def get_room_details(self, room_id: str) -> RoomSchema:
+        room = self.db.get(Room, room_id)
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
         room_dto = RoomSchema(
@@ -385,11 +388,11 @@ class RDSStorageImplementation(StorageInterface):
         )
         return room_dto
 
-    async def get_room_admins(self, room_id:str, db: Session = Depends(get_db)):
+    async def get_room_admins(self, room_id:str):
         admins = select(RoomMembership).where(
             (RoomMembership.room_id == room_id) & (RoomMembership.is_admin == True)
         )
-        admins_result = db.execute(admins).scalars().all()
+        admins_result = self.db.execute(admins).scalars().all()
         if not admins_result:
             raise HTTPException(status_code=404, detail="Admin not found")
         admins = [user.username for user in admins_result]
@@ -401,7 +404,7 @@ class RDSStorageImplementation(StorageInterface):
             db: Session = Depends(get_db)
             ) -> Dict[str, str]:
         current_room_id = add_user_to_room.room_id
-        existing_request = db.execute(
+        existing_request = self.db.execute(
             select(MembershipRequest).where(
                 (MembershipRequest.room_id == current_room_id) &
                 (MembershipRequest.username == add_user_to_room.added_user) &
@@ -413,17 +416,17 @@ class RDSStorageImplementation(StorageInterface):
         if existing_request:
             raise HTTPException(status_code=400, detail="Invite already sent to this user.")
 
-        room = db.get(Room, current_room_id)
+        room = self.db.get(Room, current_room_id)
         room_membership = select(RoomMembership).where(
             (RoomMembership.room_id == current_room_id) &
             (RoomMembership.username == current_user) &
             (RoomMembership.is_admin == True)
         )
-        room_membership_result = db.execute(room_membership).scalar_one_or_none()
+        room_membership_result = self.db.execute(room_membership).scalar_one_or_none()
         if room_membership_result is None:
             raise HTTPException(status_code=403, detail="Only admins can invite users to this room.")
 
-        invited_user = db.get(User, add_user_to_room.added_user)
+        invited_user = self.db.get(User, add_user_to_room.added_user)
         if invited_user in room.users:
             raise HTTPException(status_code=400, detail="User already in room.")
         invited_username = invited_user.username
@@ -435,18 +438,18 @@ class RDSStorageImplementation(StorageInterface):
             request_type="invite",
             created_by=current_user,
         )
-        db.add(membership_request)
-        db.commit()
+        self.db.add(membership_request)
+        self.db.commit()
 
         return {"message": f"Invite sent to {invited_username} for room {current_room_id}"}
 
-    async def user_request_join_room(self, room_id: str, username: str, db: Session = Depends(get_db)) -> Dict[str, str]:
+    async def user_request_join_room(self, room_id: str, username: str) -> Dict[str, str]:
         membership_request = select(MembershipRequest).where(
             (MembershipRequest.room_id == room_id) &
             (MembershipRequest.username == username) &
             (MembershipRequest.status == "pending")
         )
-        membership_request_result = db.execute(membership_request).scalar_one_or_none()
+        membership_request_result = self.db.execute(membership_request).scalar_one_or_none()
         if membership_request_result is not None:
             raise HTTPException(status_code=400, detail="Already requested to join the room.")
 
@@ -457,12 +460,12 @@ class RDSStorageImplementation(StorageInterface):
             request_type="join_request",
             created_by=username,
         )
-        db.add(membership_request)
-        db.commit()
+        self.db.add(membership_request)
+        self.db.commit()
 
         return {"message": f"Join request sent for room {room_id} by {username} to approve"}
 
-    async def create_room_membership(self, room_membership: RoomMembershipDTO, db: Session = Depends(get_db)) -> RoomMembershipDTO:
+    async def create_room_membership(self, room_membership: RoomMembershipDTO) -> RoomMembershipDTO:
 
         room_membership_obj = RoomMembership(
             room_id=room_membership.room_id,
@@ -470,14 +473,14 @@ class RDSStorageImplementation(StorageInterface):
             last_read_at=room_membership.last_read_at,
             last_read_message_id=room_membership.last_read_message_id
         )
-        db.add(room_membership_obj)
-        db.commit()
+        self.db.add(room_membership_obj)
+        self.db.commit()
         room_membership_dto = RoomMembershipDTO.model_validate(room_membership_obj)
 
         return room_membership_dto
 
-    async def register_user(self, user_info: UserCreate, db: Session = Depends(get_db)) -> Dict[str, Any]:
-        existing_user = db.get(User, user_info.username)
+    async def register_user(self, user_info: UserCreate) -> Dict[str, Any]:
+        existing_user = self.db.get(User, user_info.username)
         if existing_user is not None:
             raise HTTPException(status_code=409, detail="User already exists")
         hashed_password = hash_password(user_info.password)
@@ -490,16 +493,16 @@ class RDSStorageImplementation(StorageInterface):
             avatar=user_info.avatar,
             pic_url=user_info.pic_url
         )
-        db.add(user)
-        db.commit()
+        self.db.add(user)
+        self.db.commit()
 
         return {
             "message": f"User created successfully: {user_info.username}",
             "status_code": status.HTTP_201_CREATED,
         }
 
-    async def login(self, user_info: UserLogin, db: Session = Depends(get_db)) -> Dict[str, Any]:
-        user = db.get(User, user_info.username)
+    async def login(self, user_info: UserLogin) -> Dict[str, Any]:
+        user = self.db.get(User, user_info.username)
         if user is None:
             raise HTTPException(status_code=401, detail="Invalid username")
         if user.password != hash_password(user_info.password):
@@ -516,15 +519,15 @@ class RDSStorageImplementation(StorageInterface):
             "refresh_token": refresh_token,
         }
 
-    async def get_user_profile(self, username: str, db: Session = Depends(get_db)) -> UserSchema:
-        user = db.get(User, username)
+    async def get_user_profile(self, username: str) -> UserSchema:
+        user = self.db.get(User, username)
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
         user_dto = UserSchema.model_validate(user)
         return user_dto
 
-    async def update_user_profile(self, update_user: UpdateUserDTO, username: str, db: Session = Depends(get_db)) -> User:
-        user = db.get(User, username)
+    async def update_user_profile(self, update_user: UpdateUserDTO, username: str) -> User:
+        user = self.db.get(User, username)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -537,18 +540,18 @@ class RDSStorageImplementation(StorageInterface):
         if update_user.pic_url:
             user.pic_url = update_user.pic_url
 
-        db.commit()
-        db.refresh(user)
+        self.db.commit()
+        self.db.refresh(user)
         return user
 
-    async def get_all_users(self, db: Session = Depends(get_db)) -> List[UserSchema]:
-        users = db.execute(select(User)).scalars().all()
+    async def get_all_users(self) -> List[UserSchema]:
+        users = self.db.execute(select(User)).scalars().all()
         user_dtos = [UserSchema.model_validate(user) for user in users]
         return user_dtos
 
-    async def get_all_rooms(self, db: Session = Depends(get_db)) -> List[RoomSchema]:
+    async def get_all_rooms(self) -> List[RoomSchema]:
         room_dtos = []
-        rooms = db.execute(select(Room)).scalars().all()
+        rooms = self.db.execute(select(Room)).scalars().all()
         for room in rooms:
             room_dtos.append(
                 RoomSchema(
@@ -560,10 +563,10 @@ class RDSStorageImplementation(StorageInterface):
             )
         return room_dtos
 
-    async def get_messages(self, room_id: str, db: Session = Depends(get_db)) -> List[MessageSchema]:
+    async def get_messages(self, room_id: str) -> List[MessageSchema]:
 
         statement = select(Message).where(Message.room_id == room_id)
-        room_messages = db.execute(statement).scalars().all()
+        room_messages = self.db.execute(statement).scalars().all()
         # for msg in room_messages:
         msg_dtos = [MessageSchema.model_validate(msg) for msg in room_messages]
         sorted_msg_dtos = sorted(msg_dtos, key=lambda x: x.timestamp)
@@ -573,8 +576,7 @@ class RDSStorageImplementation(StorageInterface):
     async def send_message(self, content: Optional[str] = Form(None),
                            room_id: str = Form(...),
                            file: Optional[UploadFile] = File(None),
-                           username: str = Depends(),
-                           db: Session = Depends(get_db)) -> Dict:
+                           username: str = Depends()) -> Dict:
         import boto3
         S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME","chatroom-s3-files")
         AWS_REGION = os.getenv("REGION_NAME","us-east-1")
@@ -583,10 +585,10 @@ class RDSStorageImplementation(StorageInterface):
         API_GW_MANAGEMENT_ENDPOINT = os.environ.get("API_GW_MANAGEMENT_ENDPOINT")
         apigw = boto3.client("apigatewaymanagementapi", endpoint_url=API_GW_MANAGEMENT_ENDPOINT)
 
-        user = db.get(User, username)
+        user = self.db.get(User, username)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        room = db.get(Room, room_id)
+        room = self.db.get(Room, room_id)
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
 
@@ -625,17 +627,17 @@ class RDSStorageImplementation(StorageInterface):
             room_id=room_id,
             file_url=file_url
         )
-        db.add(message_item)
+        self.db.add(message_item)
         print("file_url ", file_url)
         # Save UserMessage Info
         user_message_item = UserMessage(
             message_id=message_item.message_id,
             username=user.username
         )
-        db.add(user_message_item)
-        db.commit()
+        self.db.add(user_message_item)
+        self.db.commit()
         msg_dto = MessageSchema.model_validate(message_item)
-        conns = db.query(Connection).filter(Connection.room_id == room_id).all()
+        conns = self.db.query(Connection).filter(Connection.room_id == room_id).all()
         payload = {"event": "new_message", "room_id": room_id, "message": {
             "message_id": message_item.message_id,
             "content": message_item.content,
@@ -649,21 +651,21 @@ class RDSStorageImplementation(StorageInterface):
                 apigw.post_to_connection(ConnectionId=c.connection_id, Data=json.dumps(payload).encode('utf-8'))
             except apigw.exceptions.GoneException:
                 # stale connection - delete
-                db.delete(c)
-                db.commit()
+                self.db.delete(c)
+                self.db.commit()
 
 
         return payload["message"]
 
-    async def get_all_messages(self, db: Session = Depends(get_db)) -> List[MessageSchema]:
-        messages = db.execute(select(Message)).scalars().all()
+    async def get_all_messages(self) -> List[MessageSchema]:
+        messages = self.db.execute(select(Message)).scalars().all()
         message_dtos = [MessageSchema.model_validate(msg) for msg in messages]
         return message_dtos
 
-    async def get_message_last_seen_info(self, room_id: str, db: Session = Depends(get_db)) -> List[MessageInfoDTO]:
+    async def get_message_last_seen_info(self, room_id: str) -> List[MessageInfoDTO]:
         # Get all UserMessages for messages in this room
         statement = select(UserMessage).join(Message).where(Message.room_id == room_id)
-        user_messages = db.execute(statement).scalars().all()
+        user_messages = self.db.execute(statement).scalars().all()
         
         message_dtos = [
             MessageInfoDTO(
@@ -675,8 +677,8 @@ class RDSStorageImplementation(StorageInterface):
 
         return message_dtos
 
-    async def get_all_invitees_and_join_requests(self, db: Session = Depends(get_db)) -> List[MembershipRequestSchema]:
-        membership_requests = db.execute(select(MembershipRequest)).scalars().all()
+    async def get_all_invitees_and_join_requests(self) -> List[MembershipRequestSchema]:
+        membership_requests = self.db.execute(select(MembershipRequest)).scalars().all()
         membership_requests_dtos = [MembershipRequestSchema.model_validate(membership_request)
                                     for membership_request in membership_requests]
         return membership_requests_dtos

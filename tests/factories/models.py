@@ -35,7 +35,7 @@ class RoomMembershipFactory(BaseFactory):
     class Meta:
         model = RoomMembership
 
-    id = factory.Sequence(lambda n:  n+1)
+
     room_id = factory.Sequence(lambda n:  "room_{}".format(n + 1))
     username = factory.Sequence(lambda n: "user_{}".format(n + 1))
     is_admin = factory.Iterator([True, False])
@@ -59,7 +59,7 @@ class MembershipRequestFactory(BaseFactory):
     class Meta:
         model = MembershipRequest
 
-    id = factory.Sequence(lambda n: n + 1)
+
     room_id = factory.Sequence(lambda n: "room_{}".format(n + 1))
     username = factory.Faker("first_name")
     request_type = factory.Iterator(['invite', 'join_request'])
