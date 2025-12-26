@@ -168,11 +168,10 @@ class RDSStorageImplementation(StorageInterface):
         return [UserReactionDTO.model_validate(reaction) for reaction in reactions]
 
 
-    async def get_all_reactions(self) -> List[UserReaction]:
+    async def get_all_reactions(self) -> List[UserReactionDTO]:
         statement = select(UserReaction)
-        reactions = []
         reactions = self.db.execute(statement).scalars().all()
-        return reactions
+        return [UserReactionDTO.model_validate(reaction) for reaction in reactions]
 
     async def create_reply_to_message(self, reply_message: ReplyMessageDTO, username: str) -> ReplyThreadDTO:
         reply_thread = ReplyThread(
